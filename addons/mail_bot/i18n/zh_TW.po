@@ -3,7 +3,7 @@
 # 	* mail_bot
 # 
 # Translators:
-# Martin Trigaux, 2023
+# Martin Trigaux, 2022
 # Tony Ng, 2023
 # 
 msgid ""
@@ -80,11 +80,10 @@ msgstr "嗯..."
 #, python-format
 msgid ""
 "I am a simple bot, but if that's a dog, he is the cutest 😊 "
-"<br/>Congratulations, you finished this tour. You can now <b>close this chat"
-" window</b>. Enjoy discovering Odoo."
+"<br/>Congratulations, you finished this tour. You can now <b>close this "
+"conversation</b> or start the tour again with typing <span "
+"class=\"o_odoobot_command\">start the tour</span>. Enjoy discovering Odoo!"
 msgstr ""
-"我是一個簡單的機器人，但如果那是一隻狗，他是最可愛的😊<br/>恭喜你，你完成了這次導覽。您現在可以<b>關閉此聊天窗口</b>。享受發現 Odoo "
-"的樂趣。"
 
 #. module: mail_bot
 #: code:addons/mail_bot/models/mail_bot.py:0
@@ -146,27 +145,27 @@ msgstr "OdooBot 狀態"
 #. module: mail_bot
 #: model:ir.model.fields,field_description:mail_bot.field_res_users__odoobot_failed
 msgid "Odoobot Failed"
-msgstr "Odoobot Failed"
+msgstr "Odoobot 操作失敗"
 
 #. module: mail_bot
 #: model:ir.model.fields.selection,name:mail_bot.selection__res_users__odoobot_state__onboarding_attachement
 msgid "Onboarding attachment"
-msgstr ""
+msgstr "新手簡介附件"
 
 #. module: mail_bot
 #: model:ir.model.fields.selection,name:mail_bot.selection__res_users__odoobot_state__onboarding_command
 msgid "Onboarding command"
-msgstr "Onboarding 命令"
+msgstr "新手簡介指令"
 
 #. module: mail_bot
 #: model:ir.model.fields.selection,name:mail_bot.selection__res_users__odoobot_state__onboarding_emoji
 msgid "Onboarding emoji"
-msgstr "Onboarding emoji"
+msgstr "新手簡介表情符號"
 
 #. module: mail_bot
 #: model:ir.model.fields.selection,name:mail_bot.selection__res_users__odoobot_state__onboarding_ping
 msgid "Onboarding ping"
-msgstr "Onboarding ping"
+msgstr "新手簡介 ping 網絡測試"
 
 #. module: mail_bot
 #: code:addons/mail_bot/models/mail_bot.py:0

@@ -17,7 +17,6 @@ import {
     commonParentGet,
     containsUnremovable,
     DIRECTIONS,
-    endPos,
     ensureFocus,
     getCursorDirection,
     getFurthestUneditableParent,
@@ -29,13 +28,13 @@ import {
     preserveCursor,
     setCursorStart,
     setSelection,
-    startPos,
     toggleClass,
     closestElement,
     isVisible,
     isHtmlContentSupported,
     rgbToHex,
     isFontAwesome,
+    ICON_SELECTOR,
     getInSelection,
     getDeepRange,
     getRowIndex,
@@ -54,10 +53,8 @@ import {
     YOUTUBE_URL_GET_VIDEO_ID,
     unwrapContents,
     peek,
-    rightPos,
     getAdjacentPreviousSiblings,
     getAdjacentNextSiblings,
-    rightLeafOnlyNotBlockPath,
     isBlock,
     getTraversedNodes,
     getSelectedNodes,
@@ -79,6 +76,16 @@ import {
     isNotAllowedContent,
     isEditorTab,
     EMAIL_REGEX,
+    prepareUpdate,
+    boundariesOut,
+    rightLeafOnlyNotBlockPath,
+    lastLeaf,
+    isUnbreakable,
+    splitAroundUntil,
+    ZERO_WIDTH_CHARS,
+    ZERO_WIDTH_CHARS_REGEX,
+    getAdjacentCharacter,
+    isLinkEligibleForZwnbsp,
 } from './utils/utils.js';
 import { editorCommands } from './commands/commands.js';
 import { Powerbox } from './powerbox/Powerbox.js';
@@ -174,11 +181,10 @@ export const CLIPBOARD_WHITELISTS = {
     ],
     attributes: ['class', 'href', 'src', 'target'],
     styledTags: ['SPAN', 'B', 'STRONG', 'I', 'S', 'U', 'FONT', 'TD'],
-    styles: ['text-decoration', 'font-weight', 'background-color', 'color', 'font-style', 'text-decoration-line', 'font-size']
 };
 
 // Commands that don't require a DOM selection but take an argument instead.
-const SELECTIONLESS_COMMANDS = ['addRow', 'addColumn', 'removeRow', 'removeColumn'];
+const SELECTIONLESS_COMMANDS = ['addRow', 'addColumn', 'removeRow', 'removeColumn', 'resetSize'];
 
 function defaultOptions(defaultObject, object) {
     const newObject = Object.assign({}, defaultObject, object);
@@ -255,6 +261,8 @@ export class OdooEditor extends EventTarget {
 
         this.isMobile = matchMedia('(max-width: 767px)').matches;
         this.isFirefox = navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+
+        this.isPrepareUpdateLocked = false;
 
         // Keyboard type detection, happens only at the first keydown event.
         this.keyboardType = KEYBOARD_TYPES.UNKNOWN;
@@ -340,6 +348,7 @@ export class OdooEditor extends EventTarget {
             document: this.document,
             floating: true,
             getContextFromParentRect: this.options.getContextFromParentRect,
+            direction: this.options.direction,
         });
         document.body.appendChild(this.powerboxTablePicker.el);
         this.powerboxTablePicker.addEventListener('cell-selected', ev => {
@@ -349,7 +358,7 @@ export class OdooEditor extends EventTarget {
             });
         });
         // Create the table picker for the toolbar.
-        this.toolbarTablePicker = new TablePicker({ document: this.document });
+        this.toolbarTablePicker = new TablePicker({ document: this.document, direction: this.options.direction});
         this.toolbarTablePicker.addEventListener('cell-selected', ev => {
             this.execCommand('insertTable', {
                 rowNumber: ev.detail.rowNumber,
@@ -357,7 +366,10 @@ export class OdooEditor extends EventTarget {
             });
         });
         // Create the table UI.
+        this._tableUiContainer = this.document.createElement('div');
+        this._tableUiContainer.classList.add('o_table_ui_container');
         const parser = new DOMParser();
+        const isRTL = this.options.direction === "rtl";
         for (const direction of ['row', 'column']) {
             // Create the containers and the menu toggler.
             const iconClass = (direction === 'row') ? 'fa-ellipsis-v' : 'fa-ellipsis-h';
@@ -368,13 +380,19 @@ export class OdooEditor extends EventTarget {
                 </div>
             </div>`, 'text/html').body.firstElementChild;
             const uiMenu = ui.querySelector('.o_table_ui_menu');
-
             // Create the move buttons.
             if (direction === 'column') {
-                uiMenu.append(...parser.parseFromString(`
-                    <div class="o_move_left"><span class="fa fa-chevron-left"></span>` + this.options._t('Move left') + `</div>
-                    <div class="o_move_right"><span class="fa fa-chevron-right"></span>` + this.options._t('Move right') + `</div>
-                `, 'text/html').body.children);
+                if (isRTL) {
+                    uiMenu.append(...parser.parseFromString(`
+                        <div class="o_move_right"><span class="fa fa-chevron-right"></span>` + this.options._t('Move left') + `</div>
+                        <div class="o_move_left"><span class="fa fa-chevron-left"></span>` + this.options._t('Move right') + `</div>
+                    `, 'text/html').body.children);
+                } else {
+                    uiMenu.append(...parser.parseFromString(`
+                        <div class="o_move_left"><span class="fa fa-chevron-left"></span>` + this.options._t('Move left') + `</div>
+                        <div class="o_move_right"><span class="fa fa-chevron-right"></span>` + this.options._t('Move right') + `</div>
+                    `, 'text/html').body.children);
+                }
                 this.addDomListener(uiMenu.querySelector('.o_move_left'), 'click', this._onTableMoveLeftClick);
                 this.addDomListener(uiMenu.querySelector('.o_move_right'), 'click', this._onTableMoveRightClick);
             } else {
@@ -388,10 +406,17 @@ export class OdooEditor extends EventTarget {
 
             // Create the add buttons.
             if (direction === 'column') {
-                uiMenu.append(...parser.parseFromString(`
-                    <div class="o_insert_left"><span class="fa fa-plus"></span>` + this.options._t('Insert left') + `</div>
-                    <div class="o_insert_right"><span class="fa fa-plus"></span>` + this.options._t('Insert right') +`</div>
-                `, 'text/html').body.children);
+                if (isRTL) {
+                    uiMenu.append(...parser.parseFromString(`
+                        <div class="o_insert_right"><span class="fa fa-plus"></span>` + this.options._t('Insert left') + `</div>
+                        <div class="o_insert_left"><span class="fa fa-plus"></span>` + this.options._t('Insert right') + `</div>
+                    `, 'text/html').body.children);
+                } else {
+                    uiMenu.append(...parser.parseFromString(`
+                        <div class="o_insert_left"><span class="fa fa-plus"></span>` + this.options._t('Insert left') + `</div>
+                        <div class="o_insert_right"><span class="fa fa-plus"></span>` + this.options._t('Insert right') + `</div>
+                    `, 'text/html').body.children);
+                }
                 this.addDomListener(uiMenu.querySelector('.o_insert_left'), 'click', () => this.execCommand('addColumn', 'before', this._columnUiTarget));
                 this.addDomListener(uiMenu.querySelector('.o_insert_right'), 'click', () => this.execCommand('addColumn', 'after', this._columnUiTarget));
             } else {
@@ -414,9 +439,15 @@ export class OdooEditor extends EventTarget {
                 this.addDomListener(uiMenu.querySelector('.o_delete_row'), 'click', this._onTableDeleteRowClick);
             }
 
+            // Reset the size of the table
+            uiMenu.append(parser.parseFromString(`<div class="o_reset_table_size"><span class="fa fa-table"></span>` + this.options._t('Reset Size') + `</div>
+                `, 'text/html').body.firstChild)
+            this.addDomListener(uiMenu.querySelector('.o_reset_table_size'), 'click', () => this.execCommand('resetSize', this._tableUiTarget));
+
             this[`_${direction}Ui`] = ui;
-            this.document.body.append(ui);
+            this._tableUiContainer.append(ui);
             this.addDomListener(ui.querySelector('.o_table_ui_menu_toggler'), 'click', this._onTableMenuTogglerClick);
+            this.editable.before(this._tableUiContainer);
         }
 
         // --------
@@ -564,7 +595,7 @@ export class OdooEditor extends EventTarget {
                     callback: () => {
                         let html = '\u200B<span contenteditable="false" class="o_stars o_three_stars">';
                         html += Array(3).fill().map(() => '<i class="fa fa-star-o"></i>').join('');
-                        html += '</span>';
+                        html += '</span>\u200B';
                         this.execCommand('insert', parseHTML(html));
                     },
                 },
@@ -577,7 +608,7 @@ export class OdooEditor extends EventTarget {
                     callback: () => {
                         let html = '\u200B<span contenteditable="false" class="o_stars o_five_stars">';
                         html += Array(5).fill().map(() => '<i class="fa fa-star-o"></i>').join('');
-                        html += '</span>';
+                        html += '</span>\u200B';
                         this.execCommand('insert', parseHTML(html));
                     },
                 },
@@ -621,6 +652,7 @@ export class OdooEditor extends EventTarget {
         this.addDomListener(this.document, 'keyup', this._onDocumentKeyup);
         this.addDomListener(this.document, 'mouseup', this._onDocumentMouseup);
         this.addDomListener(this.document, 'click', this._onDocumentClick);
+        this.addDomListener(this.document, 'scroll', this._onScroll, true);
 
         this.multiselectionRefresh = this.multiselectionRefresh.bind(this);
         this._resizeObserver = new ResizeObserver(this.multiselectionRefresh);
@@ -750,15 +782,16 @@ export class OdooEditor extends EventTarget {
 
         // sanitize and mark current position as sanitized
         sanitize(target);
+        this._resetLinkInSelection();
         this._pluginCall('sanitizeElement',
                          [target.parentElement || target]);
         this.options.onPostSanitize(target);
     }
 
-    addDomListener(element, eventName, callback) {
+    addDomListener(element, eventName, callback, useCapture) {
         const boundCallback = callback.bind(this);
         this._domListeners.push([element, eventName, boundCallback]);
-        element.addEventListener(eventName, boundCallback);
+        element.addEventListener(eventName, boundCallback, useCapture);
     }
 
     _generateId() {
@@ -1074,6 +1107,9 @@ export class OdooEditor extends EventTarget {
         this.observerActive();
         this.dispatchEvent(new Event('historyResetFromSteps'));
     }
+    historyGetSteps() {
+        return this._historySteps;
+    }
     historyGetMissingSteps({fromStepId, toStepId}) {
         const fromIndex = this._historySteps.findIndex(x => x.id === fromStepId);
         const toIndex = toStepId ? this._historySteps.findIndex(x => x.id === toStepId) : this._historySteps.length;
@@ -1146,7 +1182,10 @@ export class OdooEditor extends EventTarget {
                     toremove.remove();
                 }
             } else if (record.type === 'add') {
-                let node = this.idFind(record.oid) || this.unserializeNode(record.node);
+                let node = this.idFind(record.oid) || (record.node && this.unserializeNode(record.node));
+                if (!node) {
+                    continue;
+                }
                 if (this._collabClientId) {
                     const fakeNode = document.createElement('fake-el');
                     fakeNode.appendChild(node);
@@ -1299,6 +1338,9 @@ export class OdooEditor extends EventTarget {
                 case 'remove': {
                     let nodeToRemove = this.idFind(mutation.id);
                     if (!nodeToRemove) {
+                        if (!mutation.node) {
+                            continue;
+                        }
                         nodeToRemove = this.unserializeNode(mutation.node);
                         const fakeNode = document.createElement('fake-el');
                         fakeNode.appendChild(nodeToRemove);
@@ -1309,12 +1351,12 @@ export class OdooEditor extends EventTarget {
                         }
                         this.idSet(nodeToRemove);
                     }
-                    if (mutation.nextId && this.idFind(mutation.nextId)) {
-                        const node = this.idFind(mutation.nextId);
-                        node && node.before(nodeToRemove);
-                    } else if (mutation.previousId && this.idFind(mutation.previousId)) {
-                        const node = this.idFind(mutation.previousId);
-                        node && node.after(nodeToRemove);
+                    const next = mutation.nextId && this.idFind(mutation.nextId);
+                    const previous = !(next && next.isConnected) && mutation.previousId && this.idFind(mutation.previousId);
+                    if (next && next.isConnected) {
+                        next && next.before(nodeToRemove);
+                    } else if (previous && previous.isConnected) {
+                        previous && previous.after(nodeToRemove);
                     } else {
                         const node = this.idFind(mutation.parentId);
                         node && node.append(nodeToRemove);
@@ -1325,14 +1367,12 @@ export class OdooEditor extends EventTarget {
                     const node = this.idFind(mutation.id);
                     if (node) {
                         node.remove();
+                        node.ouid = undefined;
                     }
                 }
             }
         }
         if (sideEffect) {
-            if (!this._fixLinkMutatedElements) {
-                this._activateContenteditable();
-            }
             this.historySetSelection(step);
         }
     }
@@ -1364,7 +1404,6 @@ export class OdooEditor extends EventTarget {
         return false;
     }
     historySetSelection(step) {
-        this.deselectTable();
         if (step.selection && step.selection.anchorNodeOid) {
             const anchorNode = this.idFind(step.selection.anchorNodeOid);
             const focusNode = this.idFind(step.selection.focusNodeOid) || anchorNode;
@@ -1668,6 +1707,7 @@ export class OdooEditor extends EventTarget {
             caretAvatar.append(image);
             image.onload = () => caretAvatar.style.removeProperty('display');
             image.setAttribute('src', clientAvatarUrl);
+            image.classList.add('o_object_fit_cover');
             caretAvatar.setAttribute('data-selection-client-id', clientId);
             this._collabSelectionsContainer.append(caretAvatar);
         }
@@ -1756,28 +1796,6 @@ export class OdooEditor extends EventTarget {
         }
     }
 
-    setContenteditableLink(link) {
-        const editableChildren = link.querySelectorAll('[contenteditable=true]');
-        this._stopContenteditable();
-
-        this._fixLinkMutatedElements = {
-            link,
-            wasContenteditableTrue: [...editableChildren],
-            wasContenteditableFalse: [],
-            wasContenteditableNull: [],
-        };
-        const contentEditableAttribute = link.getAttribute('contenteditable');
-        if (contentEditableAttribute === 'true') {
-            this._fixLinkMutatedElements.wasContenteditableTrue.push(link);
-        } else if (contentEditableAttribute === 'false') {
-            this._fixLinkMutatedElements.wasContenteditableFalse.push(link);
-        } else {
-            this._fixLinkMutatedElements.wasContenteditableNull.push(link);
-        }
-
-        [...editableChildren, link].forEach(node => node.setAttribute('contenteditable', true));
-    }
-
     /**
      * Same as @see _applyCommand, except that also simulates all the
      * contenteditable behaviors we let happen, e.g. the backspace handling
@@ -1853,6 +1871,16 @@ export class OdooEditor extends EventTarget {
         if (this.deleteTableRange()) {
             return;
         }
+        // Remove all FEFF text nodes
+        let range = getDeepRange(this.editable, { sel, correctTripleClick: true });
+        if (!range) return;
+        for (const node of descendants(closestBlock(range.commonAncestorContainer))) {
+            if (node.nodeType === Node.TEXT_NODE && [...node.textContent].every(char => char === '\uFEFF')) {
+                const restore = prepareUpdate(...leftPos(node));
+                node.remove();
+                restore(); // Make sure to make <br>s visible if needed.
+            }
+        }
         if (!this.editable.childElementCount) {
             // Ensure the editable has content.
             const p = document.createElement('p');
@@ -1861,7 +1889,7 @@ export class OdooEditor extends EventTarget {
             setSelection(p, 0);
             return;
         }
-        let range = getDeepRange(this.editable, {
+        range = getDeepRange(this.editable, {
             sel,
             splitText: true,
             select: true,
@@ -1891,7 +1919,12 @@ export class OdooEditor extends EventTarget {
             }
         }
         let insertedZws;
-        if (sel && !sel.isCollapsed && !range.startOffset && !range.startContainer.previousSibling) {
+        let { startContainer: start, startOffset, endContainer: end, endOffset } = range;
+        const startBlock = closestBlock(start);
+        const endBlock = closestBlock(end);
+        const [firstLeafOfStartBlock, lastLeafOfEndBlock] = [firstLeaf(startBlock), lastLeaf(endBlock)];
+        const startLink = closestElement(range.startContainer, 'a');
+        if (sel && !sel.isCollapsed && !range.startOffset && !range.startContainer.previousSibling && !startLink) {
             // Insert a zero-width space before the selection if the selection
             // is non-collapsed and at the beginning of its parent, so said
             // parent will have content after extraction. This ensures that the
@@ -1899,22 +1932,47 @@ export class OdooEditor extends EventTarget {
             // Eg, <h1><font>[...]</font></h1> will preserve the styles of the
             // <font> node. If it remains empty, it will be cleaned up later by
             // the sanitizer.
+            // Links are excluded from this.
             const zws = document.createTextNode('\u200B');
             range.startContainer.before(zws);
             insertedZws = zws;
         }
-        let start = range.startContainer;
-        const startBlock = closestBlock(start);
-        let end = range.endContainer;
-        const endBlock = closestBlock(end);
-        // Let the DOM split and delete the range.
+        // Do not join blocks in the following cases:
+        // 1. start and end share a common ancestor block with the range
+        // 2. selection spans multiple TDs
+        // 3. selection starts at beginning of startBlock and ends at end of
+        //    endBlock
         const doJoin =
-            (closestBlock(start) !== closestBlock(range.commonAncestorContainer) ||
-            closestBlock(end) !== closestBlock(range.commonAncestorContainer))
-            && (closestBlock(start).tagName !== 'TD' && closestBlock(end).tagName !== 'TD');
+            !(startBlock === closestBlock(range.commonAncestorContainer) &&
+                endBlock === closestBlock(range.commonAncestorContainer))
+            && (startBlock.tagName !== 'TD' && endBlock.tagName !== 'TD')
+            && !(firstLeafOfStartBlock === start && lastLeafOfEndBlock === end);
         let next = nextLeaf(end, this.editable);
+
+        // Get the boundaries of the range so as to get the state to restore.
+        if (end.nodeType === Node.TEXT_NODE) {
+            splitTextNode(end, endOffset);
+            endOffset = nodeSize(end);
+        }
+        if (start.nodeType === Node.TEXT_NODE) {
+            splitTextNode(start, startOffset);
+            startOffset = 0;
+        }
+        const restoreUpdate = prepareUpdate(
+            ...boundariesOut(start).slice(0, 2),
+            ...boundariesOut(end).slice(2, 4),
+            { allowReenter: false, label: 'deleteRange' });
+
+        // Let the DOM split and delete the range.
         const contents = range.extractContents();
+
         setSelection(start, nodeSize(start));
+        const startLi = closestElement(start, 'li');
+        // Uncheck a list item with empty text in multi-list selection.
+        if (startLi && startLi.classList.contains('o_checked') &&
+            ['\u200B', ''].includes(startLi.textContent) && closestElement(end, 'li') !== startLi) {
+            startLi.classList.remove('o_checked');
+        }
         range = getDeepRange(this.editable, { sel });
         // Restore unremovables removed by extractContents.
         [...contents.querySelectorAll('*')].filter(isUnremovable).forEach(n => {
@@ -1946,15 +2004,10 @@ export class OdooEditor extends EventTarget {
             fillEmpty(closestBlock(start));
         }
         fillEmpty(closestBlock(range.endContainer));
-        // Ensure trailing space remains visible.
-        const joinWith = range.endContainer;
-        const oldText = joinWith.textContent;
-        const rightLeaf = rightLeafOnlyNotBlockPath(range.endContainer).next().value;
-        const hasSpaceAfter = !rightLeaf || rightLeaf.textContent.startsWith(' ');
-        const shouldPreserveSpace = (doJoin || hasSpaceAfter) && joinWith && oldText.endsWith(' ');
-        if (shouldPreserveSpace) {
-            joinWith.textContent = oldText.replace(/ $/, '\u00A0');
-            setSelection(joinWith, nodeSize(joinWith));
+        let joinWith = range.endContainer;
+        const rightLeaf = rightLeafOnlyNotBlockPath(joinWith).next().value;
+        if (rightLeaf && rightLeaf.nodeValue === ' ') {
+            joinWith = rightLeaf;
         }
         // Rejoin blocks that extractContents may have split in two.
         while (
@@ -1978,9 +2031,9 @@ export class OdooEditor extends EventTarget {
                 break;
             }
         }
-        // If the oDeleteBackward loop have emptied the start block and the
-        // range end in another element (rangeStart != rangeEnd), we delete
-        // the start block and move the cursor to the end block.
+        // If the oDeleteBackward loop emptied the start block and the range
+        // ends in another element (rangeStart !== rangeEnd), we delete the
+        // start block and move the cursor to the end block.
         if (
             startBlock &&
             startBlock.textContent === '\u200B' &&
@@ -1998,21 +2051,18 @@ export class OdooEditor extends EventTarget {
             // parent styles, then call `fillEmpty` to properly add a flagged
             // zws if still needed.
             const el = closestElement(insertedZws);
+            const next = insertedZws.nextSibling;
             insertedZws.remove();
             el && fillEmpty(el);
-        }
-        next = range.endContainer && rightLeafOnlyNotBlockPath(range.endContainer).next().value;
-        if (
-            shouldPreserveSpace && next && !(next && next.nodeType === Node.TEXT_NODE && next.textContent.startsWith(' '))
-        ) {
-            // Restore the text we modified in order to preserve trailing space.
-            joinWith.textContent = oldText;
-            setSelection(joinWith, nodeSize(joinWith));
+            setSelection(next, 0);
         }
         if (joinWith) {
             const el = closestElement(joinWith);
             el && fillEmpty(el);
         }
+        const restoreCursor = preserveCursor(this.document);
+        restoreUpdate();
+        restoreCursor();
     }
 
     /**
@@ -2073,6 +2123,7 @@ export class OdooEditor extends EventTarget {
         } else if (fullySelectedTables.length) {
             fullySelectedTables.forEach(table => table.remove());
         }
+        this._toggleTableUi();
         return false;
     }
 
@@ -2185,7 +2236,7 @@ export class OdooEditor extends EventTarget {
             if (range &&
                 range.startContainer === range.endContainer &&
                 range.endContainer.nodeType === Node.TEXT_NODE &&
-                range.cloneContents().textContent === '\u200B'
+                ZERO_WIDTH_CHARS.includes(range.cloneContents().textContent)
             ) {
                 // We Collapse the selection and bypass deleteRange
                 // if the range content is only one ZWS.
@@ -2201,19 +2252,7 @@ export class OdooEditor extends EventTarget {
             }
         }
         if (editorCommands[method]) {
-            // Make sure to restore the content editable before applying an
-            // editor command, as it might have been temporarily disabled for
-            // browser behaviors which should not concern editor commands.
-            const link = this._fixLinkMutatedElements && this._fixLinkMutatedElements.link;
-            if (this._fixLinkMutatedElements) {
-                this.resetContenteditableLink();
-                this._activateContenteditable();
-            }
-            const returnValue = editorCommands[method](this, ...args);
-            if (link) {
-                this.setContenteditableLink(link);
-            }
-            return returnValue;
+            return editorCommands[method](this, ...args);
         }
         if (method.startsWith('justify')) {
             const mode = method.split('justify').join('').toLocaleLowerCase();
@@ -2261,20 +2300,6 @@ export class OdooEditor extends EventTarget {
             } else {
                 throw error;
             }
-        }
-    }
-    resetContenteditableLink() {
-        if (this._fixLinkMutatedElements) {
-            for (const element of this._fixLinkMutatedElements.wasContenteditableTrue) {
-                element.setAttribute('contenteditable', 'true');
-            }
-            for (const element of this._fixLinkMutatedElements.wasContenteditableFalse) {
-                element.setAttribute('contenteditable', 'false');
-            }
-            for (const element of this._fixLinkMutatedElements.wasContenteditableNull) {
-                element.removeAttribute('contenteditable');
-            }
-            delete this._fixLinkMutatedElements;
         }
     }
     _activateContenteditable() {
@@ -2331,7 +2356,6 @@ export class OdooEditor extends EventTarget {
         if (anchorNode && !ancestors(anchorNode).includes(this.editable)) {
             return false;
         }
-        this.deselectTable();
         const traversedNodes = getTraversedNodes(this.editable);
         if (this._isResizingTable || !traversedNodes.some(node => !!closestElement(node, 'td') && !closestElement(node, '[data-oe-protected="true"]'))) {
             return false;
@@ -2498,14 +2522,17 @@ export class OdooEditor extends EventTarget {
      */
     _resizeTable(ev, direction, target1, target2) {
         ev.preventDefault();
-        const position = target1 ? (target2 ? 'middle' : 'last') : 'first';
+        let position = target1 ? (target2 ? 'middle' : 'last') : 'first';
         let [item, neighbor] = [target1 || target2, target2];
         const table = closestElement(item, 'table');
         const [sizeProp, positionProp, clientPositionProp] = direction === 'col' ? ['width', 'x', 'clientX'] : ['height', 'y', 'clientY'];
 
-        // Preserve current sizes.
-        const tableRect = table.getBoundingClientRect();
-        table.style[sizeProp] = tableRect[sizeProp] + 'px';
+        const isRTL = this.options.direction === "rtl";
+        // Preserve current width.
+        if (sizeProp === 'width') {
+            const tableRect = table.getBoundingClientRect();
+            table.style[sizeProp] = tableRect[sizeProp] + 'px';
+        }
         const unsizedItemsSelector = `${direction === 'col' ? 'td' : 'tr'}:not([style*=${sizeProp}])`;
         for (const unsizedItem of table.querySelectorAll(unsizedItemsSelector)) {
             unsizedItem.style[sizeProp] = unsizedItem.getBoundingClientRect()[sizeProp] + 'px';
@@ -2528,16 +2555,22 @@ export class OdooEditor extends EventTarget {
                     td.style.removeProperty(sizeProp);
                 }
             }
+            if (isRTL && position == "middle") {
+                [item, neighbor] = [neighbor, item];
+            }
         }
 
         const MIN_SIZE = 33; // TODO: ideally, find this value programmatically.
         switch (position) {
             case 'first': {
-                const marginProp = direction === 'col' ? 'marginLeft' : 'marginTop';
+                const marginProp = direction === 'col' ? (isRTL ? 'marginRight' : 'marginLeft') : 'marginTop';
                 const itemRect = item.getBoundingClientRect();
                 const tableStyle = getComputedStyle(table);
                 const currentMargin = pxToFloat(tableStyle[marginProp]);
-                const sizeDelta = itemRect[positionProp] - ev[clientPositionProp];
+                let sizeDelta = itemRect[positionProp] - ev[clientPositionProp];
+                if (direction === 'col' && isRTL) {
+                    sizeDelta = ev[clientPositionProp] - itemRect[positionProp] -itemRect[sizeProp] ;
+                }
                 const newMargin = currentMargin - sizeDelta;
                 const currentSize = itemRect[sizeProp];
                 const newSize = currentSize + sizeDelta;
@@ -2546,14 +2579,17 @@ export class OdooEditor extends EventTarget {
                     // Check if a nested table would overflow its parent cell.
                     const hostCell = closestElement(table.parentElement, 'td');
                     const childTable = item.querySelector('table');
+                    const endProp = isRTL ? 'left' : 'right'
                     if (direction === 'col' &&
-                        (hostCell && tableRect.right + sizeDelta > hostCell.getBoundingClientRect().right - 5 ||
-                        childTable && childTable.getBoundingClientRect().right > itemRect.right + sizeDelta - 5)) {
+                        (hostCell && tableRect[endProp] + sizeDelta > hostCell.getBoundingClientRect()[endProp] - 5 ||
+                        childTable && childTable.getBoundingClientRect()[endProp] > itemRect[endProp] + sizeDelta - 5)) {
                         break;
                     }
                     table.style[marginProp] = newMargin + 'px';
                     item.style[sizeProp] = newSize + 'px';
-                    table.style[sizeProp] = tableRect[sizeProp] + sizeDelta + 'px';
+                    if (sizeProp === 'width') {
+                        table.style[sizeProp] = tableRect[sizeProp] + sizeDelta + 'px';
+                    }
                 }
                 break;
             }
@@ -2582,7 +2618,7 @@ export class OdooEditor extends EventTarget {
                     item.style[sizeProp] = newSize + 'px';
                     if (direction === 'col') {
                         neighbor.style[sizeProp] = (newNeighborSize > MIN_SIZE ? newNeighborSize : currentNeighborSize) + 'px';
-                    } else {
+                    } else if (sizeProp === 'width') {
                         table.style[sizeProp] = tableRect[sizeProp] + sizeDelta + 'px';
                     }
                 }
@@ -2590,7 +2626,10 @@ export class OdooEditor extends EventTarget {
             }
             case 'last': {
                 const itemRect = item.getBoundingClientRect();
-                const sizeDelta = ev[clientPositionProp] - (itemRect[positionProp] + itemRect[sizeProp]); // todo: rephrase
+                let sizeDelta = ev[clientPositionProp] - (itemRect[positionProp] + itemRect[sizeProp]); // todo: rephrase
+                if (direction === 'col' && isRTL) {
+                    sizeDelta = itemRect[positionProp] - ev[clientPositionProp];
+                }
                 const currentSize = itemRect[sizeProp];
                 const newSize = currentSize + sizeDelta;
                 if ((newSize >= 0 || direction === 'row') && newSize > MIN_SIZE) {
@@ -2598,12 +2637,15 @@ export class OdooEditor extends EventTarget {
                     // Check if a nested table would overflow its parent cell.
                     const hostCell = closestElement(table.parentElement, 'td');
                     const childTable = item.querySelector('table');
+                    const endProp = isRTL ? 'left' : 'right'
                     if (direction === 'col' &&
-                        (hostCell && tableRect.right + sizeDelta > hostCell.getBoundingClientRect().right - 5 ||
-                        childTable && childTable.getBoundingClientRect().right > itemRect.right + sizeDelta - 5)) {
+                        (hostCell && tableRect[endProp] + sizeDelta > hostCell.getBoundingClientRect()[endProp] - 5 ||
+                        childTable && childTable.getBoundingClientRect()[endProp] > itemRect[endProp] + sizeDelta - 5)) {
                         break
                     }
-                    table.style[sizeProp] = tableRect[sizeProp] + sizeDelta + 'px';
+                    if (sizeProp === 'width') {
+                        table.style[sizeProp] = tableRect[sizeProp] + sizeDelta + 'px';
+                    }
                     item.style[sizeProp] = newSize + 'px';
                 }
                 break;
@@ -2633,8 +2675,8 @@ export class OdooEditor extends EventTarget {
             this._columnUi.style.visibility = 'hidden';
         }
         if (row || column) {
-            const table = closestElement(row || column, 'table');
-            table && table.addEventListener('mouseleave', () => this._toggleTableUi(), { once: true });
+            this._tableUiTarget = closestElement(row || column, 'table');
+            this._tableUiTarget && this._tableUiTarget.addEventListener('mouseleave', () => this._toggleTableUi(), { once: true });
         }
     }
     /**
@@ -2645,26 +2687,40 @@ export class OdooEditor extends EventTarget {
      * @param {HTMLTableRowElement|HTMLTableCellElement} element
      */
     _positionTableUi(element) {
+        const tableUiContainerRect = this._tableUiContainer.getBoundingClientRect();
+        const isRtl = this.options.direction === 'rtl';
         const isRow = element.nodeName === 'TR';
         const ui = isRow ? this._rowUi : this._columnUi;
         const elementRect = element.getBoundingClientRect();
-        const tableRect = closestElement(element, 'table').getBoundingClientRect();
         const wrappedUi = ui.firstElementChild;
-        const togglerRect = ui.querySelector('.o_table_ui_menu_toggler').getBoundingClientRect();
-        const props = {
-            xy: {left: 'x', top: 'y'},
-            size: {left: 'width', top: 'height'}
-        };
+        const table = closestElement(element, 'table');
+        const tableRect = table && table.getBoundingClientRect();
+        const resetTableSize = ui.querySelector('.o_reset_table_size');
+        if (table && !table.hasAttribute('style')) {
+            resetTableSize.classList.add('d-none');
+        } else {
+            resetTableSize.classList.remove('d-none');
+        }
 
-        const side1 = isRow ? 'left' : 'top';
-        ui.style[side1] = (isRow ? elementRect : tableRect)[props.xy[side1]] - togglerRect[props.size[side1]] + 'px';
-        ui.style[props.size[side1]] = !isRow && togglerRect[props.size[side1]] + 'px';
+        let left;
+        let top;
+        if (isRow) {
+            if (isRtl) {
+                left = tableRect.right - tableUiContainerRect.x;
+            } else {
+                left = elementRect.left - tableUiContainerRect.left - wrappedUi.clientWidth;
+            }
+        } else if (isRtl) {
+            left = elementRect.left - tableUiContainerRect.left + wrappedUi.clientWidth;
+        } else {
+            left = elementRect.left - tableUiContainerRect.left - (isRow ? wrappedUi.clientWidth : 0);
+        }
+        top = elementRect.top - tableUiContainerRect.top - (isRow ? 0 : wrappedUi.clientHeight);
 
-        const side2 = isRow ? 'top' : 'left';
-        wrappedUi.style[props.size[side2]] = elementRect[props.size[side2]] + 'px';
-        ui.style[side2] = tableRect[props.xy[side2]] + 'px';
-        wrappedUi.style[side2] = elementRect[side2] - tableRect[side2] - 1 + 'px';
-        ui.style[props.size[side2]] = tableRect[props.size[side2]] + 'px';
+        ui.style.left = left + 'px';
+        ui.style.top = top + 'px';
+        wrappedUi.style[isRow ? 'height' : 'width'] = elementRect[isRow ? 'height' : 'width'] + 'px';
+
     }
 
     // HISTORY
@@ -2713,7 +2769,7 @@ export class OdooEditor extends EventTarget {
         const anchorNode = this._latestComputedSelection.anchorNode;
         const focusNode = this._latestComputedSelection.focusNode;
         const parentTextContent = anchorNode.parentElement? anchorNode.parentElement.textContent : null;
-        return anchorNode === focusNode && (parentTextContent === '' || parentTextContent === '\u200B')
+        return anchorNode === focusNode && (['', ...ZERO_WIDTH_CHARS].includes(parentTextContent))
     }
     /**
      * Get the step index in the history to undo.
@@ -2820,10 +2876,19 @@ export class OdooEditor extends EventTarget {
         }
         if (this.autohideToolbar && !this.toolbar.contains(sel.anchorNode)) {
             if (!this.isMobile) {
+                if (this.powerboxTablePicker.el.style.display === 'block') {
+                    this.toolbar.style.visibility = 'hidden';
+                    return;
+                }
                 if (show !== undefined) {
                     this.toolbar.style.visibility = show ? 'visible' : 'hidden';
                 }
                 if (show === false) {
+                    // close all dropdowns
+                    for (const dropdown of this.toolbar.querySelectorAll("ul.dropdown-menu.show")) {
+                        dropdown.classList.remove('show');
+                        dropdown.classList.add('hide');
+                    }
                     return;
                 }
             }
@@ -2941,6 +3006,7 @@ export class OdooEditor extends EventTarget {
             styleSection.querySelector('button span').textContent = activeLabel;
         }
 
+        const isInMedia = this.toolbar.classList.contains('oe-media');
         const linkNode = getInSelection(this.document, 'a');
         const linkButton = this.toolbar.querySelector('#create-link');
         linkButton && linkButton.classList.toggle('active', !!linkNode);
@@ -2948,9 +3014,17 @@ export class OdooEditor extends EventTarget {
         undoButton && undoButton.classList.toggle('disabled', !this.historyCanUndo());
         const redoButton = this.toolbar.querySelector('#redo');
         redoButton && redoButton.classList.toggle('disabled', !this.historyCanRedo());
+        // Remove the animate button appended in the website.
+        const animateButton = this.toolbar.querySelector('.oe-floating .o_we_animate_text');
+        animateButton && animateButton.remove();
         if (this.autohideToolbar && !this.isMobile && !this.toolbar.contains(sel.anchorNode)) {
             this._positionToolbar();
         }
+        // Hide create-link button if selection spans several blocks, always
+        // hide on media elements.
+        const range = getDeepRange(this.editable, { sel, correctTripleClick: true });
+        const spansBlocks = [...range.commonAncestorContainer.childNodes].some(isBlock);
+        linkButton && linkButton.classList.toggle('d-none', spansBlocks || isInMedia);
     }
     updateToolbarPosition() {
         if (
@@ -3099,6 +3173,26 @@ export class OdooEditor extends EventTarget {
                 fragment.appendChild(p);
             }
         }
+
+        // Split elements containing <br> into seperate elements for each line.
+        const brs = fragment.querySelectorAll('br');
+        for (const br of brs) {
+            const block = closestBlock(br);
+            if (
+                ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'].includes(block.nodeName) &&
+                !block.closest('li')
+            ) {
+                // A linebreak at the beginning of a block is an empty line.
+                const isEmptyLine = block.firstChild.nodeName === 'BR';
+                // Split blocks around it until only the BR remains in the
+                // block.
+                const remainingBrContainer = splitAroundUntil(br, block);
+                // Remove the container unless it represented an empty line.
+                if (!isEmptyLine) {
+                    remainingBrContainer.remove();
+                }
+            }
+        }
         return fragment;
     }
     /**
@@ -3109,7 +3203,12 @@ export class OdooEditor extends EventTarget {
      * @param {Node} node
      */
     _cleanForPaste(node) {
-        if (!this._isWhitelisted(node) || this._isBlacklisted(node)) {
+        if (
+            !this._isWhitelisted(node) ||
+            this._isBlacklisted(node) ||
+            // Google Docs have their html inside a B tag with custom id.
+            node.id && node.id.startsWith('docs-internal-guid')
+        ) {
             if (!node.matches || node.matches(CLIPBOARD_BLACKLISTS.remove.join(','))) {
                 node.remove();
             } else {
@@ -3146,14 +3245,8 @@ export class OdooEditor extends EventTarget {
             for (const attribute of [...node.attributes]) {
                 // Keep allowed styles on nodes with allowed tags.
                 if (CLIPBOARD_WHITELISTS.styledTags.includes(node.nodeName) && attribute.name === 'style') {
-                    const spanInlineStyles = attribute.value.split(';').map(x => x.trim());
-                    const allowedSpanInlineStyles = spanInlineStyles.filter(rawStyle => {
-                        return CLIPBOARD_WHITELISTS.styles.includes(rawStyle.split(':')[0].trim());
-                    });
                     node.removeAttribute(attribute.name);
-                    if (allowedSpanInlineStyles.length > 0) {
-                        node.setAttribute(attribute.name, allowedSpanInlineStyles.join(';'));
-                    } else if (['SPAN', 'FONT'].includes(node.tagName)) {
+                    if (['SPAN', 'FONT'].includes(node.tagName)) {
                         for (const unwrappedNode of unwrapContents(node)) {
                             this._cleanForPaste(unwrappedNode);
                         }
@@ -3189,12 +3282,11 @@ export class OdooEditor extends EventTarget {
                 okClass instanceof RegExp ? okClass.test(item) : okClass === item,
             );
         } else {
-            const allowedSpanStyles = CLIPBOARD_WHITELISTS.styles.map(s => `span[style*="${s}"]`);
             return (
                 item.nodeType === Node.TEXT_NODE ||
                 (
                     item.matches &&
-                    item.matches([...CLIPBOARD_WHITELISTS.nodes, ...allowedSpanStyles].join(','))
+                    item.matches(CLIPBOARD_WHITELISTS.nodes)
                 )
             );
         }
@@ -3272,55 +3364,71 @@ export class OdooEditor extends EventTarget {
             ev.inputType === 'insertText' &&
             ev.data === null &&
             this._lastBeforeInputType === 'insertParagraph';
+        const isCompositionEvent =
+            ev.inputType === "insertCompositionText" ||
+            (ev.inputType === "insertText" &&
+                (this.keyboardType === KEYBOARD_TYPES.VIRTUAL ||
+                    this.isMobile));
+        if (isCompositionEvent) {
+            this._fromCompositionText = true;
+        }
         if (this.keyboardType === KEYBOARD_TYPES.PHYSICAL || !wasCollapsed) {
-            if (ev.inputType === 'deleteContentBackward') {
+            // Most deletion cases in complex HTML like Bootstrap etc can end
+            // with a wrong result if done by the contenteditable itself.
+            // Intervene as soon as the selection was not collapsed, except
+            // while composing. In that case the composition should be left
+            // alone unless the selection was spanning different blocks.
+            const anchorNode = this.idFind(anchorNodeOid);
+            const focusNode = this.idFind(focusNodeOid);
+            const wasSelectingAcrossDifferentBlocks =
+                anchorNode &&
+                focusNode &&
+                closestBlock(anchorNode) !== closestBlock(focusNode);
+            const shouldInterveneForDeletion =
+                !this._fromCompositionText ||
+                wasSelectingAcrossDifferentBlocks;
+            if (ev.inputType === 'deleteContentBackward' && shouldInterveneForDeletion) {
                 this._compositionStep();
                 this.historyRollback();
                 ev.preventDefault();
                 this._applyCommand('oDeleteBackward');
-            } else if (ev.inputType === 'deleteContentForward' || isChromeDeleteforward) {
+            } else if (
+                (ev.inputType === 'deleteContentForward' || isChromeDeleteforward) &&
+                shouldInterveneForDeletion
+            ) {
                 this._compositionStep();
                 this.historyRollback();
                 ev.preventDefault();
                 this._applyCommand('oDeleteForward');
-            } else if (ev.inputType === 'insertParagraph' || isChromeInsertParagraph) {
+            } else if (
+                (ev.inputType === 'insertParagraph' || isChromeInsertParagraph)
+            ) {
                 this._compositionStep();
                 this.historyRollback();
                 ev.preventDefault();
                 if (this._applyCommand('oEnter') === UNBREAKABLE_ROLLBACK_CODE) {
-                    const brs = this._applyCommand('oShiftEnter');
-                    const anchor = brs[0].parentElement;
-                    if (anchor.nodeName === 'A') {
-                        if (brs.includes(anchor.firstChild)) {
-                            brs.forEach(br => anchor.before(br));
-                            setSelection(...rightPos(brs[brs.length - 1]));
-                            this.historyStep();
-                        } else if (brs.includes(anchor.lastChild)) {
-                            brs.forEach(br => anchor.after(br));
-                            setSelection(...rightPos(brs[0]));
-                            this.historyStep();
-                        }
-                    }
+                    this._applyCommand('oShiftEnter');
                 }
             } else if (['insertText', 'insertCompositionText'].includes(ev.inputType)) {
-                // insertCompositionText, courtesy of Samsung keyboard.
                 const selection = this.document.getSelection();
-                // Detect that text was selected and change behavior only if it is the case,
-                // since it is the only text insertion case that may cause problems.
-                const wasTextSelected = anchorNodeOid !== focusNodeOid || anchorOffset !== focusOffset;
                 // Unit tests events are not trusted by the browser,
                 // the insertText has to be done manualy.
                 const isUnitTests = !ev.isTrusted && this.testMode;
                 // we cannot trust the browser to keep the selection inside empty tags.
                 const latestSelectionInsideEmptyTag = this._isLatestComputedSelectionInsideEmptyInlineTag();
-                if (wasTextSelected || isUnitTests || latestSelectionInsideEmptyTag) {
+                const shouldInterveneForInsertion = !wasCollapsed && shouldInterveneForDeletion;
+                if (
+                    shouldInterveneForInsertion ||
+                    latestSelectionInsideEmptyTag ||
+                    isUnitTests
+                ) {
                     ev.preventDefault();
                     if (!isUnitTests) {
                         // First we need to undo the character inserted by the browser.
                         // Since the unit test Event is not trusted by the browser, we don't
                         // need to undo the char during the unit tests.
                         // @see https://developer.mozilla.org/en-US/docs/Web/API/Event/isTrusted
-                        this._applyRawCommand('oDeleteBackward');
+                        this._protect(() => this._applyRawCommand('oDeleteBackward'));
                     }
                     if (latestSelectionInsideEmptyTag) {
                         // Restore the selection inside the empty Element.
@@ -3338,16 +3446,22 @@ export class OdooEditor extends EventTarget {
                     ev.data === ' ' &&
                     selection &&
                     selection.anchorNode &&
+                    isHtmlContentSupported(selection.anchorNode) &&
                     !closestElement(selection.anchorNode).closest('a') &&
                     selection.anchorNode.nodeType === Node.TEXT_NODE
                 ) {
+                    // Merge adjacent text nodes.
+                    selection.anchorNode.parentNode.normalize();
                     const textSliced = selection.anchorNode.textContent.slice(0, selection.anchorOffset);
                     const textNodeSplitted = textSliced.split(/\s/);
 
                     // Remove added space
                     textNodeSplitted.pop();
                     const potentialUrl = textNodeSplitted.pop();
-                    const lastWordMatch = potentialUrl.match(URL_REGEX_WITH_INFOS) && !potentialUrl.match(EMAIL_REGEX);
+                    const lastWordMatch =
+                        potentialUrl &&
+                        potentialUrl.match(URL_REGEX_WITH_INFOS) &&
+                        !potentialUrl.match(EMAIL_REGEX);
 
                     if (lastWordMatch) {
                         const matches = getUrlsInfosInString(textSliced);
@@ -3434,8 +3548,9 @@ export class OdooEditor extends EventTarget {
             } else {
                 this.historyStep();
             }
-        } else if (ev.inputType === 'insertCompositionText') {
-            this._fromCompositionText = true;
+        }
+        if (!isCompositionEvent) {
+            this._fromCompositionText = false;
         }
         if (shouldOpenPowerbox) {
             this._isPowerboxOpenOnInput = true;
@@ -3484,7 +3599,8 @@ export class OdooEditor extends EventTarget {
                         td.remove();
                     }
                 }
-                for (const tr of tableClone.querySelectorAll('tr:not(:has(td))')) {
+                const trsWithoutTd = Array.from(tableClone.querySelectorAll('tr')).filter(row => !row.querySelector('td'));
+                for (const tr of trsWithoutTd) {
                     if (closestElement(tr, 'table') === tableClone) { // ignore nested
                         tr.remove();
                     }
@@ -3506,6 +3622,23 @@ export class OdooEditor extends EventTarget {
             rangeContent.lastChild.remove();
         }
 
+        const commonAncestorElement = closestElement(range.commonAncestorContainer);
+        if (commonAncestorElement && !isBlock(rangeContent.firstChild)) {
+            // Get the list of ancestor elements starting from the provided
+            // commonAncestorElement up to the block-level element.
+            const blockEl = closestBlock(commonAncestorElement);
+            const ancestorsList = [commonAncestorElement, ...ancestors(commonAncestorElement, blockEl)];
+            // Wrap rangeContent with clones of their ancestors to keep the styles.
+            for (const ancestor of ancestorsList) {
+                // Keep the formatting by keeping inline ancestors and paragraph
+                // related ones like headings etc.
+                if (!isBlock(ancestor) || paragraphRelatedElements.includes(ancestor.nodeName)) {
+                    const clone = ancestor.cloneNode();
+                    clone.append(...rangeContent.childNodes);
+                    rangeContent.appendChild(clone);
+                }
+            }
+        }
         const dataHtmlElement = document.createElement('data');
         dataHtmlElement.append(rangeContent);
         const odooHtml = dataHtmlElement.innerHTML;
@@ -3535,7 +3668,7 @@ export class OdooEditor extends EventTarget {
             // backspace
             const selection = this.document.getSelection();
             if (!ev.ctrlKey && !ev.metaKey) {
-                if (selection.isCollapsed) {
+                if (selection.isCollapsed && !this._fromCompositionText) {
                     // We need to hijack it because firefox doesn't trigger a
                     // deleteBackward input event with a collapsed selection in
                     // front of a contentEditable="false" (eg: font awesome).
@@ -3568,9 +3701,10 @@ export class OdooEditor extends EventTarget {
             // Tab
             const tabHtml = '<span class="oe-tabs" contenteditable="false">\u0009</span>\u200B';
             const sel = this.document.getSelection();
-            if (closestElement(sel.anchorNode, 'table')) {
+            const closestLi = closestElement(sel.anchorNode, 'li');
+            if (closestElement(sel.anchorNode, 'table') && !closestLi) {
                 this._onTabulationInTable(ev);
-            } else if (!ev.shiftKey && sel.isCollapsed && !closestElement(sel.anchorNode, 'li')) {
+            } else if (!ev.shiftKey && sel.isCollapsed && !closestLi) {
                 // Indent text (collapsed selection).
                 this.execCommand('insert', parseHTML(tabHtml));
             } else {
@@ -3677,60 +3811,37 @@ export class OdooEditor extends EventTarget {
             ev.preventDefault();
             ev.stopPropagation();
             this.execCommand('strikeThrough');
-        } else if (IS_KEYBOARD_EVENT_LEFT_ARROW(ev)) {
-            getDeepRange(this.editable);
-            const selection = this.document.getSelection();
-            // Find previous character.
-            let { focusNode, focusOffset } = selection;
-            if (!focusNode) {
-                return;
+        } else if (IS_KEYBOARD_EVENT_LEFT_ARROW(ev) || IS_KEYBOARD_EVENT_RIGHT_ARROW(ev)) {
+            // Move selection if adjacent character is zero-width space.
+            const side = ev.key === 'ArrowLeft' ? 'previous' : 'next';
+            let didSkipFeff = false;
+            let adjacentCharacter = getAdjacentCharacter(this.editable, side);
+            let previousSelection; // Is used to stop if `modify` doesn't move the selection.
+            const hasSelectionChanged = (oldSelection = {}) => {
+                const newSelection = this.document.getSelection();
+                return (
+                    oldSelection.anchorNode !== newSelection.anchorNode ||
+                    oldSelection.anchorOffset !== newSelection.anchorOffset ||
+                    oldSelection.focusNode !== newSelection.focusNode ||
+                    oldSelection.focusOffset !== newSelection.focusOffset
+                );
+            };
+            while (ZERO_WIDTH_CHARS.includes(adjacentCharacter) && hasSelectionChanged(previousSelection)) {
+                const selection = this.document.getSelection();
+                previousSelection = {...selection};
+                selection.modify(
+                    ev.shiftKey ? 'extend' : 'move',
+                    side === 'previous' ? 'backward' : 'forward',
+                    'character',
+                );
+                didSkipFeff = didSkipFeff || adjacentCharacter === '\ufeff';
+                adjacentCharacter = getAdjacentCharacter(this.editable, side);
             }
-            let previousCharacter = focusOffset > 0 && focusNode.textContent[focusOffset - 1];
-            if (!previousCharacter) {
-                focusNode = previousLeaf(focusNode);
-                focusOffset = nodeSize(focusNode);
-                previousCharacter = focusNode.textContent[focusOffset - 1];
-            }
-            // Move selection if previous character is zero-width space
-            if (previousCharacter === '\u200B') {
-                focusOffset -= 1;
-                while (focusNode && (focusOffset < 0 || !focusNode.textContent[focusOffset])) {
-                    focusNode = nextLeaf(focusNode);
-                    focusOffset = focusNode && nodeSize(focusNode);
-                }
-                const startContainer = ev.shiftKey ? selection.anchorNode : focusNode;
-                const startOffset = ev.shiftKey ? selection.anchorOffset : focusOffset;
-                setSelection(startContainer, startOffset, focusNode, focusOffset);
-            }
-        } else if (IS_KEYBOARD_EVENT_RIGHT_ARROW(ev)) {
-            getDeepRange(this.editable);
-            const selection = this.document.getSelection();
-            // Find next character.
-            let { focusNode, focusOffset } = selection;
-            if (!focusNode) {
-                return;
-            }
-            let nextCharacter = focusNode.textContent[focusOffset];
-            if (!nextCharacter) {
-                focusNode = nextLeaf(focusNode);
-                focusOffset = 0;
-                nextCharacter = focusNode.textContent[focusOffset];
-            }
-            // Move selection if next character is zero-width space
-            if (nextCharacter === '\u200B') {
-                focusOffset += 1;
-                let newFocusNode = focusNode;
-                while (newFocusNode && (!newFocusNode.textContent[focusOffset] || !closestElement(newFocusNode).isContentEditable)) {
-                    newFocusNode = nextLeaf(newFocusNode);
-                    focusOffset = 0;
-                }
-                if (!focusOffset && closestBlock(focusNode) !== closestBlock(newFocusNode)) {
-                    newFocusNode = focusNode; // Do not move selection to next block.
-                    focusOffset = nodeSize(focusNode);
-                }
-                const startContainer = ev.shiftKey ? selection.anchorNode : newFocusNode;
-                const startOffset = ev.shiftKey ? selection.anchorOffset : focusOffset;
-                setSelection(startContainer, startOffset, newFocusNode, focusOffset);
+            if (didSkipFeff && !ev.shiftKey) {
+                // If moving, just skip the zws then stop. Otherwise, do as if
+                // they weren't there.
+                ev.preventDefault();
+                ev.stopPropagation();
             }
         }
     }
@@ -3761,8 +3872,8 @@ export class OdooEditor extends EventTarget {
         let appliedCustomSelection = false;
         if (selection.rangeCount && selection.getRangeAt(0)) {
             appliedCustomSelection = this._handleSelectionInTable();
-            if (this.options.onCollaborativeSelectionChange) {
-                this.options.onCollaborativeSelectionChange(this.getCurrentCollaborativeSelection());
+            if (!appliedCustomSelection) {
+                this.deselectTable();
             }
         }
         const isSelectionInEditable = this.isSelectionInEditable(selection);
@@ -3788,7 +3899,7 @@ export class OdooEditor extends EventTarget {
             // re-trigger the _onSelectionChange.
             return;
         }
-
+        this._resetLinkInSelection();
         // Compute the current selection on selectionchange but do not record it. Leave
         // that to the command execution or the 'input' event handler.
         this._computeHistorySelection();
@@ -3796,8 +3907,33 @@ export class OdooEditor extends EventTarget {
         if (this._currentMouseState === 'mouseup') {
             this._fixFontAwesomeSelection();
         }
+        if (
+            selection.rangeCount &&
+            selection.getRangeAt(0) &&
+            this.options.onCollaborativeSelectionChange
+        ) {
+            this.options.onCollaborativeSelectionChange(this.getCurrentCollaborativeSelection());
+        }
     }
 
+    /**
+     * Apply the o_link_in_selection class if the selection is in a single link,
+     * remove it otherwise.
+     */
+    _resetLinkInSelection() {
+        const selection = this.document.getSelection();
+        const [anchorLink, focusLink] = [selection.anchorNode, selection.focusNode]
+            .map(node => closestElement(node, 'a:not(.btn)'));
+        const singleLinkInSelection = anchorLink === focusLink && anchorLink && isLinkEligibleForZwnbsp(this.editable, anchorLink) && anchorLink;
+        if (singleLinkInSelection) {
+            singleLinkInSelection.classList.add('o_link_in_selection');
+        }
+        for (const link of this.editable.querySelectorAll('.o_link_in_selection')) {
+            if (link !== singleLinkInSelection) {
+                link.classList.remove('o_link_in_selection');
+            }
+        };
+    }
     /**
      * Returns true if the current selection is inside the editable.
      *
@@ -3859,7 +3995,7 @@ export class OdooEditor extends EventTarget {
         if (selection.isCollapsed || !range) {
             return false;
         }
-        return range.cloneContents().textContent === '\u200B';
+        return ZERO_WIDTH_CHARS.includes(range.cloneContents().textContent);
     }
 
     getCurrentCollaborativeSelection() {
@@ -3879,7 +4015,6 @@ export class OdooEditor extends EventTarget {
 
     clean() {
         this.observerUnactive();
-        this.resetContenteditableLink();
         this.cleanForSave();
         this.observerActive();
     }
@@ -3973,6 +4108,27 @@ export class OdooEditor extends EventTarget {
 
         sanitize(element);
 
+        // Remove o_link_in_selection class
+        for (const link of element.querySelectorAll('.o_link_in_selection')) {
+            link.classList.remove('o_link_in_selection');
+        }
+
+        // Remove all FEFF within a `prepareUpdate` to make sure to make <br>
+        // nodes visible if needed.
+        for (const node of descendants(element)) {
+            if (node.nodeType === Node.TEXT_NODE && node.textContent.includes('\uFEFF')) {
+                const restore = prepareUpdate(...leftPos(node));
+                node.textContent = node.textContent.replaceAll('\uFEFF', '');
+                restore(); // Make sure to make <br>s visible if needed.
+            }
+        }
+        // Remove now empty links
+        for (const link of element.querySelectorAll('a')) {
+            if (![...link.childNodes].some(isVisible) && !link.classList.length) {
+                link.remove();
+            }
+        }
+
         // Remove contenteditable=false on elements
         for (const el of element.querySelectorAll('[contenteditable="false"]')) {
             if (!el.hasAttribute('data-oe-keep-contenteditable')) {
@@ -3985,14 +4141,18 @@ export class OdooEditor extends EventTarget {
         }
 
         // Remove Zero Width Spaces on Font awesome elements
-        const faSelector = 'i.fa,span.fa,i.fab,span.fab,i.fad,span.fad,i.far,span.far';
-        for (const el of element.querySelectorAll(faSelector)) {
+        for (const el of element.querySelectorAll(ICON_SELECTOR)) {
             cleanZWS(el);
         }
 
         // Clean custom selections
         if (this.deselectTable() && hasValidSelection(this.editable)) {
             this.document.getSelection().collapseToStart();
+        }
+
+        // Remove empty class attributes
+        for (const el of element.querySelectorAll('*[class=""]')) {
+            el.removeAttribute('class');
         }
     }
     /**
@@ -4060,7 +4220,7 @@ export class OdooEditor extends EventTarget {
         const content = block && block.innerHTML.trim();
         if (
             block &&
-            (content === '' || content === '<br>') &&
+            content === '<br>' &&
             !block.querySelector('T[t-out]') &&
             ancestors(block, this.editable).includes(this.editable)
         ) {
@@ -4071,118 +4231,6 @@ export class OdooEditor extends EventTarget {
                 block.classList.add('oe-command-temporary-hint');
             }
             this.observerActive();
-        }
-    }
-
-    _fixSelectionOnContenteditableFalse() {
-        const selection = this.document.getSelection();
-        const { anchorNode, anchorOffset } = selection;
-        const selectedPositionNode = anchorNode && anchorNode.nodeType === Node.ELEMENT_NODE &&
-            anchorNode.childNodes[anchorOffset];
-        if (anchorNode && closestElement(anchorNode, '[data-oe-protected="true"]')) {
-            if (!(
-                selectedPositionNode && selectedPositionNode.nodeType === Node.ELEMENT_NODE &&
-                ['INPUT', 'TEXTAREA'].includes(selectedPositionNode.tagName)
-            )) {
-                selection.removeAllRanges();
-            }
-            return;
-        }
-        // When the browser set the selection inside a node that is
-        // contenteditable=false, it breaks the edition upon keystroke. Move the
-        // selection so that it remain in an editable area. An example of this
-        // case happend when the selection goes into a fontawesome node.
-
-        if (!selection.rangeCount) {
-            return;
-        }
-        const range = selection.getRangeAt(0);
-        const newRange = range.cloneRange();
-        const startContainer = closestElement(range.startContainer);
-        const endContainer = closestElement(range.endContainer);
-
-        /**
-         * Get last not editable node if the `node` is within `root` and is a
-         * non editable node.
-         *
-         * Otherwise return `undefined`.
-         *
-         * Example:
-         *
-         * ```html
-         * <div class="root" contenteditable="true">
-         *     <div class="A">
-         *         <div class="B" contenteditable="false">
-         *             <div class="C">
-         *             </div>
-         *         </div>
-         *     </div>
-         * </div>
-         * ```
-         *
-         * ```js
-         * _getLastNotEditableAncestorOfNotEditable(document.querySelector(".C")) // return "B"
-         * ```
-         */
-        function _getLastNotEditableAncestorOfNotEditable(node, root) {
-            let currentNode = node;
-            let lastEditable;
-            if (!ancestors(node, root).includes(root)) {
-                return;
-            }
-            while (currentNode && currentNode !== root) {
-                if (currentNode.isContentEditable) {
-                    return lastEditable;
-                } else if (currentNode.isContentEditable === false) {
-                    // By checking that the node is contentEditable === false,
-                    // we ensure at the same time that the currentNode is a
-                    // HTMLElement.
-                    lastEditable = currentNode;
-                }
-                currentNode = currentNode.parentElement;
-            }
-            return lastEditable;
-        }
-
-        const startContainerNotEditable = _getLastNotEditableAncestorOfNotEditable(
-            startContainer,
-            this.editable,
-        );
-        const endContainerNotEditable = _getLastNotEditableAncestorOfNotEditable(
-            endContainer,
-            this.editable,
-        );
-        const bothNotEditable = startContainerNotEditable && endContainerNotEditable;
-
-        if (startContainerNotEditable) {
-            if (startContainerNotEditable.previousSibling) {
-                newRange.setStart(
-                    startContainerNotEditable.previousSibling,
-                    startContainerNotEditable.previousSibling.length,
-                );
-                if (bothNotEditable) {
-                    newRange.setEnd(
-                        startContainerNotEditable.previousSibling,
-                        startContainerNotEditable.previousSibling.length,
-                    );
-                }
-            } else {
-                newRange.setStart(startContainerNotEditable.parentElement, 0);
-                if (bothNotEditable) {
-                    newRange.setEnd(startContainerNotEditable.parentElement, 0);
-                }
-            }
-        }
-        if (!bothNotEditable && endContainerNotEditable) {
-            if (endContainerNotEditable.nextSibling) {
-                newRange.setEnd(endContainerNotEditable.nextSibling, 0);
-            } else {
-                newRange.setEnd(...endPos(endContainerNotEditable.parentElement));
-            }
-        }
-        if (startContainerNotEditable || endContainerNotEditable) {
-            selection.removeAllRanges();
-            selection.addRange(newRange);
         }
     }
 
@@ -4251,29 +4299,13 @@ export class OdooEditor extends EventTarget {
         this._currentMouseState = ev.type;
 
         this._fixFontAwesomeSelection();
-
-        this._fixSelectionOnContenteditableFalse();
     }
 
     _onMouseDown(ev) {
         this._currentMouseState = ev.type;
         this._lastMouseClickPosition = [ev.x, ev.y];
 
-        // When selecting all the text within a link then triggering delete or
-        // inserting a character, the cursor and insertion is outside the link.
-        // To avoid this problem, we make all editable zone become uneditable
-        // except the link. Then when cliking outside the link, reset the
-        // editable zones.
-        const link = closestElement(ev.target, 'a');
-        this.resetContenteditableLink();
         this._activateContenteditable();
-        if (
-            link && link.isContentEditable &&
-            !link.querySelector('div') &&
-            !closestElement(ev.target, '.o_not_editable')
-        ) {
-            this.setContenteditableLink(link);
-        }
         // Ignore any changes that might have happened before this point.
         this.observer.takeRecords();
 
@@ -4298,6 +4330,9 @@ export class OdooEditor extends EventTarget {
                 toggleClass(node, 'o_checked');
                 ev.preventDefault();
                 this.historyStep();
+                if (!document.getSelection().isCollapsed) {
+                    this._updateToolbar(true);
+                }
             }
         }
 
@@ -4329,10 +4364,12 @@ export class OdooEditor extends EventTarget {
             this.toolbar.style.pointerEvents = 'none';
             if (this.deselectTable() && hasValidSelection(this.editable)) {
                 this.document.getSelection().collapseToStart();
+                this._updateToolbar(false);
             }
         }
         // Handle table resizing.
         const isHoveringTdBorder = this._isHoveringTdBorder(ev);
+        const isRTL = this.options.direction === 'rtl';
         if (isHoveringTdBorder) {
             ev.preventDefault();
             const direction = { top: 'row', right: 'col', bottom: 'row', left: 'col' }[isHoveringTdBorder] || false;
@@ -4342,14 +4379,24 @@ export class OdooEditor extends EventTarget {
                 target1 = getAdjacentPreviousSiblings(column).find(node => node.nodeName === 'TR');
                 target2 = closestElement(ev.target, 'tr');
             } else if (isHoveringTdBorder === 'right') {
-                target1 = ev.target;
-                target2 = getAdjacentNextSiblings(ev.target).find(node => node.nodeName === 'TD');
+                if (isRTL) {
+                    target1 = getAdjacentPreviousSiblings(ev.target).find(node => node.nodeName === 'TD');
+                    target2 = ev.target;
+                } else {
+                    target1 = ev.target;
+                    target2 = getAdjacentNextSiblings(ev.target).find(node => node.nodeName === 'TD');
+                }
             } else if (isHoveringTdBorder === 'bottom' && column) {
                 target1 = closestElement(ev.target, 'tr');
                 target2 = getAdjacentNextSiblings(column).find(node => node.nodeName === 'TR');
             } else if (isHoveringTdBorder === 'left') {
-                target1 = getAdjacentPreviousSiblings(ev.target).find(node => node.nodeName === 'TD');
-                target2 = ev.target;
+                if (isRTL) {
+                    target1 = ev.target;
+                    target2 = getAdjacentNextSiblings(ev.target).find(node => node.nodeName === 'TD');
+                } else {
+                    target1 = getAdjacentPreviousSiblings(ev.target).find(node => node.nodeName === 'TD');
+                    target2 = ev.target;
+                }
             }
             this._isResizingTable = true;
             this._toggleTableResizeCursor(direction);
@@ -4358,6 +4405,7 @@ export class OdooEditor extends EventTarget {
                 ev.preventDefault();
                 this._isResizingTable = false;
                 this._toggleTableResizeCursor(false);
+                this.historyStep();
                 this.document.removeEventListener('mousemove', resizeTable);
                 this.document.removeEventListener('mouseup', stopResizing);
                 this.document.removeEventListener('mouseleave', stopResizing);
@@ -4365,6 +4413,15 @@ export class OdooEditor extends EventTarget {
             this.document.addEventListener('mousemove', resizeTable);
             this.document.addEventListener('mouseup', stopResizing);
             this.document.addEventListener('mouseleave', stopResizing);
+        }
+    }
+
+    _onScroll(ev) {
+        if (this._rowUiTarget && !this._rowUi.classList.contains('o_open')) {
+            this._positionTableUi(this._rowUiTarget);
+        }
+        if (this._columnUiTarget && !this._columnUi.classList.contains('o_open')) {
+            this._positionTableUi(this._columnUiTarget);
         }
     }
 
@@ -4404,7 +4461,6 @@ export class OdooEditor extends EventTarget {
             }
             this._onKeyupResetContenteditableNodes = [];
         }
-        this._fixSelectionOnContenteditableFalse();
     }
 
     _onDocumentMouseup() {
@@ -4485,23 +4541,27 @@ export class OdooEditor extends EventTarget {
         const targetSupportsHtmlContent = isHtmlContentSupported(sel.anchorNode);
         // Replace entire link if its label is fully selected.
         const link = closestElement(sel.anchorNode, 'a');
-        if (link && sel.toString().replace(/\u200B/g, '') === link.innerText.replace(/\u200B/g, '')) {
+        if (link && sel.toString().replace(ZERO_WIDTH_CHARS_REGEX, '') === link.innerText.replace(ZERO_WIDTH_CHARS_REGEX, '')) {
             const start = leftPos(link);
-            // Exit link isolation since we're removing the link and editing outside of it.
-            if (this._fixLinkMutatedElements && this._fixLinkMutatedElements.link === link) {
-                this.resetContenteditableLink();
-                this._activateContenteditable();
-            }
             link.remove();
             setSelection(...start, ...start, false);
         }
-        if (odooEditorHtml && targetSupportsHtmlContent) {
+        if (!targetSupportsHtmlContent) {
+            const text = ev.clipboardData.getData("text/plain");
+            this._applyCommand("insert", text);
+        } else if (odooEditorHtml) {
             const fragment = parseHTML(odooEditorHtml);
+            const selector = this.options.renderingClasses.map(c => `.${c}`).join(',');
+            if (selector) {
+                for (const element of fragment.querySelectorAll(selector)) {
+                    element.classList.remove(...this.options.renderingClasses);
+                }
+            }
             DOMPurify.sanitize(fragment, { IN_PLACE: true });
             if (fragment.hasChildNodes()) {
                 this._applyCommand('insert', fragment);
             }
-        } else if ((files.length || clipboardHtml) && targetSupportsHtmlContent) {
+        } else if (files.length || clipboardHtml) {
             const clipboardElem = this._prepareClipboardData(clipboardHtml);
             // When copy pasting a table from the outside, a picture of the
             // table can be included in the clipboard as an image file. In that
@@ -4528,7 +4588,7 @@ export class OdooEditor extends EventTarget {
             if (splitAroundUrl.length === 3 && !splitAroundUrl[0] && !splitAroundUrl[2]) {
                 // Pasted content is a single URL.
                 const url = /^https?:\/\//i.test(text) ? text : 'https://' + text;
-                const youtubeUrl = this.options.allowCommandVideo &&YOUTUBE_URL_GET_VIDEO_ID.exec(url);
+                const youtubeUrl = this.options.allowCommandVideo && YOUTUBE_URL_GET_VIDEO_ID.exec(url);
                 const urlFileExtention = url.split('.').pop();
                 const isImageUrl = ['jpg', 'jpeg', 'png', 'gif', 'svg'].includes(urlFileExtention.toLowerCase());
                 // A url cannot be transformed inside an existing link.
@@ -4586,11 +4646,11 @@ export class OdooEditor extends EventTarget {
                             name: this.options._t('Embed Youtube Video'),
                             description: this.options._t('Embed the youtube video in the document.'),
                             fontawesome: 'fa-youtube-play',
-                            callback: () => {
+                            callback: async () => {
                                 revertTextInsertion();
                                 let videoElement;
                                 if (this.options.getYoutubeVideoElement) {
-                                    videoElement = this.options.getYoutubeVideoElement(youtubeUrl[0]);
+                                    videoElement = await this.options.getYoutubeVideoElement(youtubeUrl[0]);
                                 } else {
                                     videoElement = document.createElement('iframe');
                                     videoElement.setAttribute('width', '560');
@@ -4630,15 +4690,25 @@ export class OdooEditor extends EventTarget {
                         const textFragments = splitAroundUrl[i].split(/\r?\n/);
                         let textIndex = 1;
                         for (const textFragment of textFragments) {
-                            this._applyCommand('insert', textFragment);
+                            // Replace consecutive spaces by alternating nbsp.
+                            const modifiedTextFragment = textFragment.replace(/( {2,})/g, match => {
+                                let alertnateValue = false;
+                                return match.replace(/ /g, () => {
+                                    alertnateValue = !alertnateValue;
+                                    const replaceContent = alertnateValue ? '\u00A0' : ' ';
+                                    return replaceContent;
+                                });
+                            });
+                            this._applyCommand('insert', modifiedTextFragment);
                             if (textIndex < textFragments.length) {
                                 // Break line by inserting new paragraph and
                                 // remove current paragraph's bottom margin.
                                 const p = closestElement(sel.anchorNode, 'p');
-                                if (this._applyCommand('oEnter') === UNBREAKABLE_ROLLBACK_CODE) {
+                                if (isUnbreakable(closestBlock(sel.anchorNode))) {
                                     this._applyCommand('oShiftEnter');
-                                } else if (p) {
-                                    p.style.marginBottom = '0px';
+                                } else {
+                                    this._applyCommand('oEnter');
+                                    p && (p.style.marginBottom = '0px');
                                 }
                             }
                             textIndex++;
@@ -4720,7 +4790,7 @@ export class OdooEditor extends EventTarget {
         const cursorDestination =
             tds[tds.findIndex(td => closestTd === td) + (direction === DIRECTIONS.LEFT ? -1 : 1)];
         if (cursorDestination) {
-            setSelection(...startPos(cursorDestination), ...endPos(cursorDestination), true);
+            setCursorEnd(lastLeaf(cursorDestination));
         } else if (direction === DIRECTIONS.RIGHT) {
             this.execCommand('addRow', 'after');
             this._onTabulationInTable(ev);
@@ -4729,6 +4799,15 @@ export class OdooEditor extends EventTarget {
     _onTableMenuTogglerClick(ev) {
         const uiWrapper = closestElement(ev.target, '.o_table_ui');
         uiWrapper.classList.toggle('o_open');
+
+        if (this.options.direction === 'rtl') {
+            const menuRowEl = this._tableUiContainer.querySelector('.o_row_ui .o_table_ui_menu')
+            const menuRowRect = menuRowEl.getBoundingClientRect();
+            menuRowEl.style.position = 'absolute';
+            menuRowEl.style.left = `-${menuRowRect.width}px`;
+            menuRowEl.style.margin = `0px`;
+        }
+
         if (uiWrapper.classList.contains('o_column_ui')) {
             const columnIndex = getColumnIndex(this._columnUiTarget);
             uiWrapper.querySelector('.o_move_left').classList.toggle('o_hide', columnIndex === 0);

@@ -1853,8 +1853,9 @@
     };
     const objectToString = Object.prototype.toString;
     const objectHasOwnProperty = Object.prototype.hasOwnProperty;
-    const SUPPORTED_RAW_TYPES = new Set(["Object", "Array", "Set", "Map", "WeakMap"]);
-    const COLLECTION_RAWTYPES = new Set(["Set", "Map", "WeakMap"]);
+    // Use arrays because Array.includes is faster than Set.has for small arrays
+    const SUPPORTED_RAW_TYPES = ["Object", "Array", "Set", "Map", "WeakMap"];
+    const COLLECTION_RAW_TYPES = ["Set", "Map", "WeakMap"];
     /**
      * extract "RawType" from strings like "[object RawType]" => this lets us ignore
      * many native objects such as Promise (whose toString is [object Promise])
@@ -1877,7 +1878,7 @@
         if (typeof value !== "object") {
             return false;
         }
-        return SUPPORTED_RAW_TYPES.has(rawType(value));
+        return SUPPORTED_RAW_TYPES.includes(rawType(value));
     }
     /**
      * Creates a reactive from the given object/callback if possible and returns it,
@@ -2047,7 +2048,7 @@
         const reactivesForTarget = reactiveCache.get(target);
         if (!reactivesForTarget.has(callback)) {
             const targetRawType = rawType(target);
-            const handler = COLLECTION_RAWTYPES.has(targetRawType)
+            const handler = COLLECTION_RAW_TYPES.includes(targetRawType)
                 ? collectionsProxyHandler(target, callback, targetRawType)
                 : basicProxyHandler(callback);
             const proxy = new Proxy(target, handler);
@@ -2076,7 +2077,7 @@
             set(target, key, value, receiver) {
                 const hadKey = objectHasOwnProperty.call(target, key);
                 const originalValue = Reflect.get(target, key, receiver);
-                const ret = Reflect.set(target, key, value, receiver);
+                const ret = Reflect.set(target, key, toRaw(value), receiver);
                 if (!hadKey && objectHasOwnProperty.call(target, key)) {
                     notifyReactives(target, KEYCHANGES);
                 }
@@ -2180,7 +2181,7 @@
             if (hadKey !== hasKey) {
                 notifyReactives(target, KEYCHANGES);
             }
-            if (originalValue !== value) {
+            if (originalValue !== target[getterName](key)) {
                 notifyReactives(target, key);
             }
             return ret;
@@ -3001,15 +3002,13 @@
             keys = [...collection.keys()];
             values = [...collection.values()];
         }
+        else if (Symbol.iterator in Object(collection)) {
+            keys = [...collection];
+            values = keys;
+        }
         else if (collection && typeof collection === "object") {
-            if (Symbol.iterator in collection) {
-                keys = [...collection];
-                values = keys;
-            }
-            else {
-                values = Object.values(collection);
-                keys = Object.keys(collection);
-            }
+            values = Object.values(collection);
+            keys = Object.keys(collection);
         }
         else {
             throw new OwlError(`Invalid loop expression: "${collection}" is not iterable`);
@@ -3164,8 +3163,14 @@
         makeRefWrapper,
     };
 
-    const bdom = { text, createBlock, list, multi, html, toggler, comment };
-    function parseXML$1(xml) {
+    /**
+     * Parses an XML string into an XML document, throwing errors on parser errors
+     * instead of returning an XML document containing the parseerror.
+     *
+     * @param xml the string to parse
+     * @returns an XML document corresponding to the content of the string
+     */
+    function parseXML(xml) {
         const parser = new DOMParser();
         const doc = parser.parseFromString(xml, "text/xml");
         if (doc.getElementsByTagName("parsererror").length) {
@@ -3193,6 +3198,8 @@
         }
         return doc;
     }
+
+    const bdom = { text, createBlock, list, multi, html, toggler, comment };
     class TemplateSet {
         constructor(config = {}) {
             this.rawTemplates = Object.create(globalTemplates);
@@ -3202,14 +3209,26 @@
             this.translateFn = config.translateFn;
             this.translatableAttributes = config.translatableAttributes;
             if (config.templates) {
-                this.addTemplates(config.templates);
+                if (config.templates instanceof Document || typeof config.templates === "string") {
+                    this.addTemplates(config.templates);
+                }
+                else {
+                    for (const name in config.templates) {
+                        this.addTemplate(name, config.templates[name]);
+                    }
+                }
             }
+            this.getRawTemplate = config.getTemplate;
         }
         static registerTemplate(name, fn) {
             globalTemplates[name] = fn;
         }
         addTemplate(name, template) {
             if (name in this.rawTemplates) {
+                // this check can be expensive, just silently ignore double definitions outside dev mode
+                if (!this.dev) {
+                    return;
+                }
                 const rawTemplate = this.rawTemplates[name];
                 const currentAsString = typeof rawTemplate === "string"
                     ? rawTemplate
@@ -3229,15 +3248,16 @@
                 // empty string
                 return;
             }
-            xml = xml instanceof Document ? xml : parseXML$1(xml);
+            xml = xml instanceof Document ? xml : parseXML(xml);
             for (const template of xml.querySelectorAll("[t-name]")) {
                 const name = template.getAttribute("t-name");
                 this.addTemplate(name, template);
             }
         }
         getTemplate(name) {
+            var _a;
             if (!(name in this.templates)) {
-                const rawTemplate = this.rawTemplates[name];
+                const rawTemplate = ((_a = this.getRawTemplate) === null || _a === void 0 ? void 0 : _a.call(this, name)) || this.rawTemplates[name];
                 if (rawTemplate === undefined) {
                     let extraInfo = "";
                     try {
@@ -4947,9 +4967,9 @@
                 const isSelect = tagName === "select";
                 const isCheckboxInput = isInput && typeAttr === "checkbox";
                 const isRadioInput = isInput && typeAttr === "radio";
-                const hasLazyMod = attr.includes(".lazy");
-                const hasNumberMod = attr.includes(".number");
                 const hasTrimMod = attr.includes(".trim");
+                const hasLazyMod = hasTrimMod || attr.includes(".lazy");
+                const hasNumberMod = attr.includes(".number");
                 const eventType = isRadioInput ? "click" : isSelect || hasLazyMod ? "change" : "input";
                 model = {
                     baseExpr,
@@ -5280,14 +5300,14 @@
                 // be ignored)
                 let el = slotNode.parentElement;
                 let isInSubComponent = false;
-                while (el !== clone) {
+                while (el && el !== clone) {
                     if (el.hasAttribute("t-component") || el.tagName[0] === el.tagName[0].toUpperCase()) {
                         isInSubComponent = true;
                         break;
                     }
                     el = el.parentElement;
                 }
-                if (isInSubComponent) {
+                if (isInSubComponent || !el) {
                     continue;
                 }
                 slotNode.removeAttribute("t-set-slot");
@@ -5496,41 +5516,6 @@
         normalizeTIf(el);
         normalizeTEscTOut(el);
     }
-    /**
-     * Parses an XML string into an XML document, throwing errors on parser errors
-     * instead of returning an XML document containing the parseerror.
-     *
-     * @param xml the string to parse
-     * @returns an XML document corresponding to the content of the string
-     */
-    function parseXML(xml) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(xml, "text/xml");
-        if (doc.getElementsByTagName("parsererror").length) {
-            let msg = "Invalid XML in template.";
-            const parsererrorText = doc.getElementsByTagName("parsererror")[0].textContent;
-            if (parsererrorText) {
-                msg += "\nThe parser has produced the following error message:\n" + parsererrorText;
-                const re = /\d+/g;
-                const firstMatch = re.exec(parsererrorText);
-                if (firstMatch) {
-                    const lineNumber = Number(firstMatch[0]);
-                    const line = xml.split("\n")[lineNumber - 1];
-                    const secondMatch = re.exec(parsererrorText);
-                    if (line && secondMatch) {
-                        const columnIndex = Number(secondMatch[0]) - 1;
-                        if (line[columnIndex]) {
-                            msg +=
-                                `\nThe error might be located at xml line ${lineNumber} column ${columnIndex}\n` +
-                                    `${line}\n${"-".repeat(columnIndex - 1)}^`;
-                        }
-                    }
-                }
-            }
-            throw new OwlError(msg);
-        }
-        return doc;
-    }
 
     function compile(template, options = {}) {
         // parsing
@@ -5556,7 +5541,7 @@
     }
 
     // do not modify manually. This file is generated by the release script.
-    const version = "2.2.5";
+    const version = "2.2.9";
 
     // -----------------------------------------------------------------------------
     //  Scheduler
@@ -5645,13 +5630,8 @@
 This is not suitable for production use.
 See https://github.com/odoo/owl/blob/${hash}/doc/reference/app.md#configuration for more information.`;
     };
-    window.__OWL_DEVTOOLS__ || (window.__OWL_DEVTOOLS__ = {
-        apps: new Set(),
-        Fiber: Fiber,
-        RootFiber: RootFiber,
-        toRaw: toRaw,
-        reactive: reactive,
-    });
+    const apps = new Set();
+    window.__OWL_DEVTOOLS__ || (window.__OWL_DEVTOOLS__ = { apps, Fiber, RootFiber, toRaw, reactive });
     class App extends TemplateSet {
         constructor(Root, config = {}) {
             super(config);
@@ -5659,7 +5639,7 @@ See https://github.com/odoo/owl/blob/${hash}/doc/reference/app.md#configuration 
             this.root = null;
             this.name = config.name || "";
             this.Root = Root;
-            window.__OWL_DEVTOOLS__.apps.add(this);
+            apps.add(this);
             if (config.test) {
                 this.dev = true;
             }
@@ -5716,7 +5696,7 @@ See https://github.com/odoo/owl/blob/${hash}/doc/reference/app.md#configuration 
                 this.root.destroy();
                 this.scheduler.processTasks();
             }
-            window.__OWL_DEVTOOLS__.apps.delete(this);
+            apps.delete(this);
         }
         createComponent(name, isStatic, hasSlotsProp, hasDynamicPropList, propList) {
             const isDynamic = !isStatic;
@@ -5791,6 +5771,7 @@ See https://github.com/odoo/owl/blob/${hash}/doc/reference/app.md#configuration 
         }
     }
     App.validateTarget = validateTarget;
+    App.apps = apps;
     App.version = version;
     async function mount(C, target, config = {}) {
         return new App(C, config).mount(target, config);
@@ -5907,7 +5888,7 @@ See https://github.com/odoo/owl/blob/${hash}/doc/reference/app.md#configuration 
      *
      * @template T
      * @param {Effect<T>} effect the effect to run on component mount and/or patch
-     * @param {()=>T} [computeDependencies=()=>[NaN]] a callback to compute
+     * @param {()=>[...T]} [computeDependencies=()=>[NaN]] a callback to compute
      *      dependencies that will decide if the effect needs to be cleaned up and
      *      run again. If the dependencies did not change, the effect will not run
      *      again. The default value returns an array containing only NaN because
@@ -6025,8 +6006,8 @@ See https://github.com/odoo/owl/blob/${hash}/doc/reference/app.md#configuration 
     Object.defineProperty(exports, '__esModule', { value: true });
 
 
-    __info__.date = '2023-08-07T10:26:30.557Z';
-    __info__.hash = 'b25e988';
+    __info__.date = '2024-01-12T14:43:56.804Z';
+    __info__.hash = '7b3e39b';
     __info__.url = 'https://github.com/odoo/owl';
 
 

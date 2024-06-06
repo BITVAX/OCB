@@ -121,7 +121,7 @@ class Product(models.Model):
         'location', 'warehouse',
     )
     def _compute_quantities(self):
-        products = self.filtered(lambda p: p.type != 'service')
+        products = self.with_context(prefetch_fields=False).filtered(lambda p: p.type != 'service').with_context(prefetch_fields=True)
         res = products._compute_quantities_dict(self._context.get('lot_id'), self._context.get('owner_id'), self._context.get('package_id'), self._context.get('from_date'), self._context.get('to_date'))
         for product in products:
             product.update(res[product.id])
@@ -355,7 +355,7 @@ class Product(models.Model):
         if operator not in ('<', '>', '=', '!=', '<=', '>='):
             raise UserError(_('Invalid domain operator %s', operator))
         if not isinstance(value, (float, int)):
-            raise UserError(_('Invalid domain right operand %s', value))
+            raise UserError(_("Invalid domain right operand '%s'. It must be of type Integer/Float", value))
 
         # TODO: Still optimization possible when searching virtual quantities
         ids = []
@@ -368,6 +368,11 @@ class Product(models.Model):
 
     def _search_qty_available_new(self, operator, value, lot_id=False, owner_id=False, package_id=False):
         ''' Optimized method which doesn't search on stock.moves, only on stock.quants. '''
+        if operator not in ('<', '>', '=', '!=', '<=', '>='):
+            raise UserError(_('Invalid domain operator %s', operator))
+        if not isinstance(value, (float, int)):
+            raise UserError(_("Invalid domain right operand '%s'. It must be of type Integer/Float", value))
+
         product_ids = set()
         domain_quant = self._get_domain_locations()[0]
         if lot_id:
@@ -681,7 +686,7 @@ class ProductTemplate(models.Model):
         default=lambda self: self.env['stock.route'].search_count([('product_selectable', '=', True)]))
     route_ids = fields.Many2many(
         'stock.route', 'stock_route_product', 'product_id', 'route_id', 'Routes',
-        domain=[('product_selectable', '=', True)],
+        domain=[('product_selectable', '=', True)], depends_context=['company', 'allowed_companies'],
         help="Depending on the modules installed, this will allow you to define the route of the product: whether it will be bought, manufactured, replenished on order, etc.")
     nbr_moves_in = fields.Integer(compute='_compute_nbr_moves', compute_sudo=False, help="Number of incoming stock moves in the past 12 months")
     nbr_moves_out = fields.Integer(compute='_compute_nbr_moves', compute_sudo=False, help="Number of outgoing stock moves in the past 12 months")
@@ -834,7 +839,7 @@ class ProductTemplate(models.Model):
     @api.depends('type')
     def _compute_tracking(self):
         self.filtered(
-            lambda t: not t.tracking or t.type == 'consu' and t.tracking != 'none'
+            lambda t: not t.tracking or t.type in ('consu', 'service')  and t.tracking != 'none'
         ).tracking = 'none'
 
     @api.onchange('type')

@@ -156,7 +156,7 @@ TRANSLATED_ELEMENTS = {
 TRANSLATED_ATTRS = dict.fromkeys({
     'string', 'add-label', 'help', 'sum', 'avg', 'confirm', 'placeholder', 'alt', 'title', 'aria-label',
     'aria-keyshortcuts', 'aria-placeholder', 'aria-roledescription', 'aria-valuetext',
-    'value_label', 'data-tooltip',
+    'value_label', 'data-tooltip', 'data-editor-message', 'label',
 }, lambda e: True)
 
 def translate_attrib_value(node):
@@ -883,8 +883,8 @@ def _extract_translatable_qweb_terms(element, callback):
             # them all lower case.
             # https://www.w3schools.com/html/html5_syntax.asp
             # https://github.com/odoo/owl/blob/master/doc/reference/component.md#composition
-            if not el.tag[0].isupper() and 't-component' not in el.attrib:
-                for att in ('title', 'alt', 'label', 'placeholder', 'aria-label'):
+            if not el.tag[0].isupper() and 't-component' not in el.attrib and 't-set-slot' not in el.attrib:
+                for att in TRANSLATED_ATTRS:
                     if att in el.attrib:
                         _push(callback, el.attrib[att], el.sourceline)
             _extract_translatable_qweb_terms(el, callback)
@@ -1285,9 +1285,9 @@ class TranslationImporter:
             xmlid = module_name + '.' + row['imd_name']
             if xmlids and xmlid not in xmlids:
                 continue
-            if row.get('type') == 'model':
+            if row.get('type') == 'model' and field.translate is True:
                 self.model_translations[model_name][field_name][xmlid][lang] = row['value']
-            elif row.get('type') == 'model_terms':
+            elif row.get('type') == 'model_terms' and callable(field.translate):
                 self.model_terms_translations[model_name][field_name][xmlid][row['src']][lang] = row['value']
 
     def save(self, overwrite=False, force_overwrite=False):
@@ -1318,7 +1318,7 @@ class TranslationImporter:
                     # [module_name, imd_name, module_name, imd_name, ...]
                     params = []
                     for xmlid in sub_xmlids:
-                        params.extend(xmlid.split('.'))
+                        params.extend(xmlid.split('.', maxsplit=1))
                     cr.execute(f'''
                         SELECT m.id, imd.module || '.' || imd.name, m."{field_name}", imd.noupdate
                         FROM "{model_table}" m, "ir_model_data" imd
@@ -1376,7 +1376,7 @@ class TranslationImporter:
                     # [xmlid, translations, xmlid, translations, ...]
                     params = []
                     for xmlid, translations in sub_field_dictionary:
-                        params.extend([*xmlid.split('.'), Json(translations)])
+                        params.extend([*xmlid.split('.', maxsplit=1), Json(translations)])
                     if not force_overwrite:
                         value_query = f"""CASE WHEN {overwrite} IS TRUE AND imd.noupdate IS FALSE
                         THEN m."{field_name}" || t.value
@@ -1571,7 +1571,7 @@ def _get_translation_upgrade_queries(cr, field):
                 SELECT it.res_id as res_id, jsonb_object_agg(it.lang, it.value) AS value, bool_or(imd.noupdate) AS noupdate
                   FROM _ir_translation it
              LEFT JOIN ir_model_data imd
-                    ON imd.model = %s AND imd.res_id = it.res_id
+                    ON imd.model = %s AND imd.res_id = it.res_id AND imd.module != '__export__'
                  WHERE it.type = 'model' AND it.name = %s AND it.state = 'translated'
               GROUP BY it.res_id
             )
@@ -1589,6 +1589,8 @@ def _get_translation_upgrade_queries(cr, field):
 
     # upgrade model_terms translation: one update per field per record
     if callable(field.translate):
+        cr.execute("SELECT code FROM res_lang WHERE active = 't'")
+        languages = {l[0] for l in cr.fetchall()}
         query = f"""
             SELECT t.res_id, m."{field.name}", t.value, t.noupdate
               FROM t
@@ -1603,6 +1605,11 @@ def _get_translation_upgrade_queries(cr, field):
                       JOIN "{Model._table}" m ON t.res_id = m.id
                       JOIN website w ON m.website_id = w.id
                       JOIN res_lang l ON w.default_lang_id = l.id
+                    UNION
+                    SELECT t.res_id, m."{field.name}", t.value, t.noupdate, 'en_US'
+                      FROM t
+                      JOIN "{Model._table}" m ON t.res_id = m.id
+                     WHERE m.website_id IS NULL
                 """
         cr.execute(f"""
             WITH t0 AS (
@@ -1641,7 +1648,13 @@ def _get_translation_upgrade_queries(cr, field):
             if "en_US" not in new_values:
                 new_values["en_US"] = field.translate(lambda v: None, src_value)
             if extra and extra[0] not in new_values:
-                new_values[extra[0]] = new_values["en_US"]
+                new_values[extra[0]] = field.translate(lambda v: None, src_value)
+            elif not extra:
+                missing_languages = languages - set(translations)
+                if missing_languages:
+                    src_value = field.translate(lambda v: None, src_value)
+                    for lang in sorted(missing_languages):
+                        new_values[lang] = src_value
             query = f'UPDATE "{Model._table}" SET "{field.name}" = %s WHERE id = %s'
             migrate_queries.append(cr.mogrify(query, [Json(new_values), id_]).decode())
 

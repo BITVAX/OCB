@@ -4,7 +4,8 @@
 # 
 # Translators:
 # Martin Trigaux, 2022
-# Layna Nascimento, 2023
+# a75f12d3d37ea5bf159c4b3e85eb30e7_0fa6927, 2023
+# Éder Brito <britoederr@gmail.com>, 2023
 # 
 msgid ""
 msgstr ""
@@ -12,7 +13,7 @@ msgstr ""
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2022-09-20 09:02+0000\n"
 "PO-Revision-Date: 2022-09-22 05:53+0000\n"
-"Last-Translator: Layna Nascimento, 2023\n"
+"Last-Translator: Éder Brito <britoederr@gmail.com>, 2023\n"
 "Language-Team: Portuguese (Brazil) (https://app.transifex.com/odoo/teams/41243/pt_BR/)\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -69,9 +70,9 @@ msgid ""
 "help you discover its features.<br/><b>Try to send me an emoji</b> <span "
 "class=\"o_odoobot_command\">:)</span>"
 msgstr ""
-"Olá,<br/>O chat Odoo's ajuda na colaboração eficiente de funcionários. Estou"
-" aqui para ajudá-lo a descobrir esses recursos.<br/><b>Tente me enviar um "
-"emoji</b> <span class=\"o_odoobot_command\">:)</span>"
+"Olá,<br/>O chat do Odoo ajuda na colaboração eficiente de funcionários. "
+"Estou aqui para ajudá-lo a descobrir esses recursos.<br/><b>Tente me enviar "
+"um emoji</b> <span class=\"o_odoobot_command\">:)</span>"
 
 #. module: mail_bot
 #: code:addons/mail_bot/models/mail_bot.py:0
@@ -84,12 +85,10 @@ msgstr "Hmmm..."
 #, python-format
 msgid ""
 "I am a simple bot, but if that's a dog, he is the cutest 😊 "
-"<br/>Congratulations, you finished this tour. You can now <b>close this chat"
-" window</b>. Enjoy discovering Odoo."
+"<br/>Congratulations, you finished this tour. You can now <b>close this "
+"conversation</b> or start the tour again with typing <span "
+"class=\"o_odoobot_command\">start the tour</span>. Enjoy discovering Odoo!"
 msgstr ""
-"Eu sou um simples bot, mas se isso é um cachorro, ele é o mais fofo 😊 <br/> "
-"Parabéns, você finalizou este tour. Você agora pode <b>fechar esta janela de"
-" conversa</b>. Divirta-se descobrindo o Odoo."
 
 #. module: mail_bot
 #: code:addons/mail_bot/models/mail_bot.py:0

@@ -128,9 +128,13 @@ registerModel({
                     return;
                 }
                 try {
+                    const body = this._createFormData({ composer, file, thread });
+                    if (activity) {
+                        body.append("activity_id", activity.id);
+                    }
                     const response = await (composer || thread).messaging.browser.fetch('/mail/attachment/upload', {
                         method: 'POST',
-                        body: this._createFormData({ composer, file, thread }),
+                        body,
                         signal: uploadingAttachment.uploadingAbortController.signal,
                     });
                     const attachmentData = await response.json();
@@ -152,7 +156,7 @@ registerModel({
                 await activity.markAsDone({ attachments });
             }
             if (webRecord) {
-                webRecord.model.load({ resId: thread.id });
+                webRecord.model.load({ offset: webRecord.model.root.offset });
             }
             if (chatter && chatter.exists() && chatter.shouldReloadParentFromFileChanged) {
                 chatter.reloadParentView();

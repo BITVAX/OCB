@@ -1667,6 +1667,42 @@ class TestAccountMoveReconcile(AccountTestInvoicingCommon):
             {'amount_residual': 0.0,        'amount_residual_currency': 0.0,    'reconciled': True},
         ])
 
+    def test_reconcile_invoice_company_curr_payment_foreign_curr(self):
+        """ Test we always use the payment rate in priority when performing a reconciliation. """
+        comp_curr = self.company_data['currency']
+        foreign_curr = self.currency_data['currency']
+
+        invoice = self.env['account.move'].create({
+            'move_type': 'out_invoice',
+            'invoice_date': '2017-01-01',
+            'date': '2017-01-01',
+            'partner_id': self.partner_a.id,
+            'currency_id': comp_curr.id,
+            'invoice_line_ids': [Command.create({
+                'product_id': self.product_a.id,
+                'price_unit': 60.0,
+                'tax_ids': [],
+            })],
+        })
+        invoice.action_post()
+
+        payment = self.env['account.payment.register']\
+            .with_context(active_model=invoice._name, active_ids=invoice.ids)\
+            .create({
+                'payment_date': '2016-01-01',
+                'amount': 90.0,
+                'currency_id': foreign_curr.id,
+            })\
+            ._create_payments()
+
+        lines = (invoice + payment.move_id).line_ids\
+            .filtered(lambda x: x.account_id.account_type == 'asset_receivable')
+        self.assertRecordValues(lines, [
+            # pylint: disable=bad-whitespace
+            {'amount_residual': 30.0,   'amount_residual_currency': 30.0,   'reconciled': False},
+            {'amount_residual': 0.0,    'amount_residual_currency': 0.0,    'reconciled': True},
+        ])
+
     def test_reverse_with_multiple_lines(self):
         """
         Test if all lines from a reversed entry are fully reconciled
@@ -4365,3 +4401,40 @@ class TestAccountMoveReconcile(AccountTestInvoicingCommon):
             ('move_id', 'not in', (invoice.id, action_values['res_id'])),
         ])
         self.assertFalse(caba_transfer_amls.move_id)
+
+    def test_reconcile_payment_custom_rate(self):
+        """When reconciling a payment we want to take the accounting rate and not the odoo rate.
+        Most likely the payment information are derived from information of the bank, therefore have
+        the relevant rate.
+        """
+        company_currency = self.company_data['currency']
+        foreign_currency = self.currency_data['currency']
+
+        invoice = self.env['account.move'].create({
+            'move_type': 'out_invoice',
+            'invoice_date': '2017-01-01',
+            'date': '2017-01-01',
+            'partner_id': self.partner_a.id,
+            'currency_id': company_currency.id,
+            'invoice_line_ids': [Command.create({
+                'product_id': self.product_a.id,
+                'price_unit': 400.0,
+                'tax_ids': [],
+            })],
+        })
+        invoice.action_post()
+
+        payment = self.env['account.payment'].create({
+            'date': invoice.date,
+            'amount': 800.0,
+            'currency_id': foreign_currency.id,
+            'partner_id': self.partner_a.id,
+        })
+        payment.action_post()
+        # unlink the rate to simulate a custom rate on the payment
+        self.env['res.currency.rate'].search([('currency_id', '=', foreign_currency.id)]).unlink()
+
+        lines_to_reconcile = (invoice + payment.move_id).line_ids.filtered(lambda x: x.account_id.account_type == 'asset_receivable')
+        lines_to_reconcile.reconcile()
+
+        self.assertTrue(all(lines_to_reconcile.mapped('reconciled')), "All lines should be fully reconciled")
