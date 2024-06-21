@@ -61,6 +61,18 @@ class AccountJournal(models.Model):
                     return model
         return 'odoo'
 
+    def _get_default_account_domain(self):
+        return """[
+            ('deprecated', '=', False),
+            ('company_id', '=', company_id),
+            ('account_type', 'not in', ('asset_receivable', 'liability_payable')),
+            ('account_type', 'in', ('asset_cash', 'liability_credit_card') if type == 'bank'
+                                   else ('asset_cash',) if type == 'cash'
+                                   else ('income',) if type == 'sale'
+                                   else ('expense',) if type == 'purchase'
+                                   else ())
+        ]"""
+
     name = fields.Char(string='Journal Name', required=True)
     code = fields.Char(string='Short Code', size=5, required=True, help="Shorter name used for display. The journal entries of this journal will also be named using this prefix by default.")
     active = fields.Boolean(default=True, help="Set active to false to hide the Journal without removing it.")
@@ -83,8 +95,7 @@ class AccountJournal(models.Model):
     default_account_id = fields.Many2one(
         comodel_name='account.account', check_company=True, copy=False, ondelete='restrict',
         string='Default Account',
-        domain="[('deprecated', '=', False), ('company_id', '=', company_id),"
-               "('account_type', '=', default_account_type), ('account_type', 'not in', ('asset_receivable', 'liability_payable'))]")
+        domain=_get_default_account_domain)
     suspense_account_id = fields.Many2one(
         comodel_name='account.account', check_company=True, ondelete='restrict', readonly=False, store=True,
         compute='_compute_suspense_account_id',
@@ -240,6 +251,11 @@ class AccountJournal(models.Model):
 
         # Collect the existing unique/electronic payment method lines.
         if unique_electronic_ids:
+            fnames = ['payment_method_id', 'journal_id']
+            if manage_providers:
+                fnames.append('payment_provider_id')
+            self.env['account.payment.method.line'].flush_model(fnames=fnames)
+
             self._cr.execute(
                 f'''
                     SELECT
@@ -258,10 +274,10 @@ class AccountJournal(models.Model):
                 values = method_information_mapping[pay_method_id]
                 is_electronic = manage_providers and values['mode'] == 'electronic'
                 if is_electronic:
-                    journal_ids = values['company_journals'].setdefault(company_id, {}).setdefault(provider_id, set())
+                    journal_ids = values['company_journals'].setdefault(company_id, {}).setdefault(provider_id, [])
                 else:
-                    journal_ids = values['company_journals'].setdefault(company_id, set())
-                journal_ids.add(journal_id)
+                    journal_ids = values['company_journals'].setdefault(company_id, [])
+                journal_ids.append(journal_id)
         return {
             'pay_methods': pay_methods,
             'manage_providers': manage_providers,
@@ -294,7 +310,7 @@ class AccountJournal(models.Model):
             for payment_type in ('inbound', 'outbound'):
                 lines = journal[f'{payment_type}_payment_method_line_ids']
                 for line in lines:
-                    if line.payment_method_id:
+                    if line.payment_method_id.id in method_information_mapping:
                         protected_payment_method_ids.add(line.payment_method_id.id)
                         if manage_providers and method_information_mapping.get(line.payment_method_id.id, {}).get('mode') == 'electronic':
                             protected_provider_ids.add(line.payment_provider_id.id)
@@ -309,13 +325,13 @@ class AccountJournal(models.Model):
 
                 if values['mode'] == 'unique':
                     # 'unique' are linked to a single journal per company.
-                    already_linked_journal_ids = values['company_journals'].get(company.id, set()) - {journal._origin.id}
+                    already_linked_journal_ids = set(values['company_journals'].get(company.id, [])) - {journal._origin.id}
                     if not already_linked_journal_ids and pay_method.id not in protected_payment_method_ids:
                         commands.append(Command.link(pay_method.id))
                 elif manage_providers and values['mode'] == 'electronic':
                     # 'electronic' are linked to a single journal per company per provider.
                     for provider_id in providers_per_code.get(company.id, {}).get(pay_method.code, set()):
-                        already_linked_journal_ids = values['company_journals'].get(company.id, {}).get(provider_id, set()) - {journal._origin.id}
+                        already_linked_journal_ids = set(values['company_journals'].get(company.id, {}).get(provider_id, [])) - {journal._origin.id}
                         if not already_linked_journal_ids and provider_id not in protected_provider_ids:
                             commands.append(Command.link(pay_method.id))
                 elif values['mode'] == 'multi':
@@ -489,10 +505,6 @@ class AccountJournal(models.Model):
         """
         Check and ensure that the payment method lines multiplicity is respected.
         """
-        self.flush_model(fnames=['inbound_payment_method_line_ids', 'outbound_payment_method_line_ids', 'company_id'])
-        self.env['account.payment.method.line'].flush_model(fnames=['payment_method_id', 'journal_id', 'name'])
-        self.env['account.payment.method'].flush_model(fnames=['code'])
-
         results = self._get_journals_payment_method_information()
         pay_methods = results['pay_methods']
         manage_providers = results['manage_providers']
@@ -537,13 +549,13 @@ class AccountJournal(models.Model):
 
                 if values['mode'] == 'unique':
                     # 'unique' are linked to a single journal per company.
-                    already_linked_journal_ids = values['company_journals'].get(company.id, set()) - {journal._origin.id}
+                    already_linked_journal_ids = values['company_journals'].get(company.id, [])
                     if len(already_linked_journal_ids) > 1:
                         failing_unicity_payment_methods |= pay_method
                 elif manage_providers and values['mode'] == 'electronic':
                     # 'electronic' are linked to a single journal per company per provider.
                     for provider_id in providers_per_code.get(company.id, {}).get(pay_method.code, set()):
-                        already_linked_journal_ids = values['company_journals'].get(company.id, {}).get(provider_id, set()) - {journal._origin.id}
+                        already_linked_journal_ids = values['company_journals'].get(company.id, {}).get(provider_id, [])
                         if len(already_linked_journal_ids) > 1:
                             failing_unicity_payment_methods |= pay_method
 

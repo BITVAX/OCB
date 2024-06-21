@@ -24,6 +24,7 @@
 # Abbas Ebadian, 2024
 # pfp pfp <pfpour@yahoo.com>, 2024
 # Hanna Kheradroosta, 2024
+# Arash Farahmandi <farahmandi.arash@gmail.com>, 2024
 # Mostafa Barmshory <mostafa.barmshory@gmail.com>, 2024
 # 
 msgid ""
@@ -2251,6 +2252,8 @@ msgid ""
 "Chat is private and unique between 2 persons. Group is private among invited"
 " persons. Channel can be freely joined (depending on its configuration)."
 msgstr ""
+"گفتگو خصوصی و منحصر به 2 نفر است. گروه مختص چند عضو دعوت شده است. می‌توان "
+"آزادانه به کانال ملحق شد (بسته به پیکربندی آن). "
 
 #. module: mail
 #: model:ir.model.fields,field_description:mail.field_mail_mail__child_ids
@@ -3989,7 +3992,7 @@ msgstr "ایمیل قالب بندی شده"
 #: code:addons/mail/static/src/models_data/emoji_data.js:0
 #, python-format
 msgid "French"
-msgstr ""
+msgstr "فرانسوی"
 
 #. module: mail
 #. odoo-javascript
@@ -4169,7 +4172,7 @@ msgstr ""
 #: model:ir.ui.menu,name:mail.mail_guest_menu
 #: model_terms:ir.ui.view,arch_db:mail.mail_guest_view_tree
 msgid "Guests"
-msgstr ""
+msgstr "مهمانان"
 
 #. module: mail
 #: model:ir.model,name:mail.model_ir_http
@@ -4756,7 +4759,7 @@ msgstr ""
 #: code:addons/mail/static/src/components/channel_invitation_form/channel_invitation_form.xml:0
 #, python-format
 msgid "Invitation Link"
-msgstr ""
+msgstr "لینک دعوت"
 
 #. module: mail
 #: model:ir.model.fields,field_description:mail.field_mail_channel__invitation_url
@@ -4834,7 +4837,7 @@ msgstr "آیا دنبال می کند"
 #. module: mail
 #: model:ir.model.fields,field_description:mail.field_mail_channel__is_member
 msgid "Is Member"
-msgstr ""
+msgstr "آیا عضو است"
 
 #. module: mail
 #: model:ir.model.fields,field_description:mail.field_mail_notification__is_read
@@ -4930,7 +4933,7 @@ msgstr "ژاپن"
 #: code:addons/mail/static/src/models_data/emoji_data.js:0
 #, python-format
 msgid "Japanese"
-msgstr ""
+msgstr "ژاپنی"
 
 #. module: mail
 #. odoo-javascript
@@ -9275,7 +9278,7 @@ msgstr ""
 #: code:addons/mail/models/fetchmail.py:0
 #, python-format
 msgid "The server \"%s\" cannot be used because it is archived."
-msgstr ""
+msgstr "سرور \"%s\" نمی تواند استفاده شود زیرا بایگانی شده است."
 
 #. module: mail
 #. odoo-javascript
@@ -35733,7 +35736,7 @@ msgstr ""
 #: code:addons/mail/static/src/models_data/emoji_data.js:0
 #, python-format
 msgid "write"
-msgstr ""
+msgstr "نوشتن"
 
 #. module: mail
 #. odoo-javascript
@@ -36083,14 +36086,14 @@ msgstr ""
 #: code:addons/mail/static/src/models_data/emoji_data.js:0
 #, python-format
 msgid "“reserved”"
-msgstr ""
+msgstr "رزرو شده"
 
 #. module: mail
 #. odoo-javascript
 #: code:addons/mail/static/src/models_data/emoji_data.js:0
 #, python-format
 msgid "“secret”"
-msgstr ""
+msgstr "محرمانه"
 
 #. module: mail
 #. odoo-javascript

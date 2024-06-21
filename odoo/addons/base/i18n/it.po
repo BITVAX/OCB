@@ -8,8 +8,8 @@
 # Luca Carlo, 2023
 # Sebastiano Picchi, 2023
 # Martin Trigaux, 2024
-# Sergio Zanchetta <primes2h@gmail.com>, 2024
 # Wil Odoo, 2024
+# Sergio Zanchetta <primes2h@gmail.com>, 2024
 # Marianna Ciofani, 2024
 # 
 msgid ""
@@ -1696,7 +1696,7 @@ msgid ""
 "    "
 msgstr ""
 "\n"
-"        Questo modulo ponte consente di gestire la subfornitura con il modulo di spedizione diretta.\n"
+"        Questo modulo ponte consente di gestire la subfornitura con il modulo di dropshipping.\n"
 "    "
 
 #. module: base
@@ -34384,7 +34384,7 @@ msgstr "Dati tecnici"
 #. module: base
 #: model:res.groups,name:base.group_no_one
 msgid "Technical Features"
-msgstr "Specifiche tecniche"
+msgstr "Funzionalità tecniche"
 
 #. module: base
 #: model:ir.model.fields,field_description:base.field_ir_module_module__name
