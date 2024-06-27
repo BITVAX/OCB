@@ -143,22 +143,26 @@ class PricelistItem(models.Model):
         'pricelist_id', 'percent_price', 'price_discount', 'price_surcharge')
     def _compute_name_and_price(self):
         for item in self:
-            if item.categ_id and item.applied_on == '2_product_category':
-                item.name = _("Category: %s") % (item.categ_id.display_name)
-            elif item.product_tmpl_id and item.applied_on == '1_product':
-                item.name = _("Product: %s") % (item.product_tmpl_id.display_name)
-            elif item.product_id and item.applied_on == '0_product_variant':
-                item.name = _("Variant: %s") % (item.product_id.display_name)
-            else:
-                item.name = _("All Products")
+            if item.exists():
+                if item.categ_id and item.applied_on == '2_product_category':
+                    item.name = _("Category: %s") % (item.categ_id.display_name)
+                elif item.product_tmpl_id and item.applied_on == '1_product':
+                    item.name = _("Product: %s") % (item.product_tmpl_id.display_name)
+                elif item.product_id and item.applied_on == '0_product_variant':
+                    item.name = _("Variant: %s") % (item.product_id.display_name)
+                else:
+                    item.name = _("All Products")
 
-            if item.compute_price == 'fixed':
-                item.price = formatLang(
-                    item.env, item.fixed_price, monetary=True, dp="Product Price", currency_obj=item.currency_id)
-            elif item.compute_price == 'percentage':
-                item.price = _("%s %% discount", item.percent_price)
+                if item.compute_price == 'fixed':
+                    item.price = formatLang(
+                        item.env, item.fixed_price, monetary=True, dp="Product Price", currency_obj=item.currency_id)
+                elif item.compute_price == 'percentage':
+                    item.price = _("%s %% discount", item.percent_price)
+                else:
+                    item.price = _("%(percentage)s %% discount and %(price)s surcharge", percentage=item.price_discount, price=item.price_surcharge)
             else:
-                item.price = _("%(percentage)s %% discount and %(price)s surcharge", percentage=item.price_discount, price=item.price_surcharge)
+                item.name = False
+                item.price = False
 
     @api.depends_context('lang')
     @api.depends('compute_price', 'price_discount', 'price_surcharge', 'base', 'price_round')
