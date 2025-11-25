@@ -1849,12 +1849,20 @@ class _String(Field):
                                 translation_dictionary[closest_term] = {k: adapter(v) for k, v in translation_dictionary.pop(old_term).items()}
                             else:
                                 translation_dictionary[closest_term] = translation_dictionary.pop(old_term)
-            # pylint: disable=not-callable
-            new_translations = {
-                l: self.translate(lambda term: translation_dictionary.get(term, {l: None})[l], cache_value)
-                for l in old_translations.keys()
-            }
-            new_translations[lang] = cache_value
+
+            matching_terms = [t for t in new_terms if t in translation_dictionary]
+
+            if len(matching_terms) < len(new_terms):
+                # FIX: Preserve existing translations when terms don't fully match
+                new_translations = dict(old_translations)
+                new_translations[lang] = cache_value
+            else:
+                # pylint: disable=not-callable
+                new_translations = {
+                    l: self.translate(lambda term: translation_dictionary.get(term, {l: None})[l], cache_value)
+                    for l in old_translations.keys()
+                }
+                new_translations[lang] = cache_value
             if not records.env['res.lang']._lang_get_id('en_US'):
                 new_translations['en_US'] = cache_value
             new_translations_list.append(new_translations)
