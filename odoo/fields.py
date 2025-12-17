@@ -1852,8 +1852,9 @@ class _String(Field):
 
             matching_terms = [t for t in new_terms if t in translation_dictionary]
 
-            if len(matching_terms) < len(new_terms):
+            if len(matching_terms) < len(new_terms) and not records.env.context.get("install_mode"):
                 # FIX: Preserve existing translations when terms don't fully match
+                # BUT only when NOT in install_mode (module update/install)
                 new_translations = dict(old_translations)
                 new_translations[lang] = cache_value
             else:
